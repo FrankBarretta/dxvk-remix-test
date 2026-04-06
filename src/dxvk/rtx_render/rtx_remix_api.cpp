@@ -51,6 +51,7 @@
 
 #include <windows.h>
 
+#include <cmath>
 #include <optional>
 
 namespace dxvk {
@@ -137,6 +138,40 @@ namespace {
 
     Vector4 tovec4(const remixapi_Float4D& v) {
       return Vector4 { v.x, v.y, v.z, v.w };
+    }
+
+    float sampleAnimated(const remixapi_AnimatedFloat1D& values, float fallback = 0.0f) {
+      return values.numberElements > 0 && values.pData != nullptr
+        ? values.pData[0]
+        : fallback;
+    }
+
+    remixapi_Float2D sampleAnimated(const remixapi_AnimatedFloat2D& values, remixapi_Float2D fallback = { 0.0f, 0.0f }) {
+      return values.numberElements > 0 && values.pData != nullptr
+        ? values.pData[0]
+        : fallback;
+    }
+
+    remixapi_Float3D sampleAnimated(const remixapi_AnimatedFloat3D& values, remixapi_Float3D fallback = { 0.0f, 0.0f, 0.0f }) {
+      return values.numberElements > 0 && values.pData != nullptr
+        ? values.pData[0]
+        : fallback;
+    }
+
+    remixapi_Float4D sampleAnimated(const remixapi_AnimatedFloat4D& values, remixapi_Float4D fallback = { 0.0f, 0.0f, 0.0f, 0.0f }) {
+      return values.numberElements > 0 && values.pData != nullptr
+        ? values.pData[0]
+        : fallback;
+    }
+
+    float scalarSizeFromAnimated(const remixapi_AnimatedFloat2D& values, float fallback = 0.0f) {
+      const auto size = sampleAnimated(values, remixapi_Float2D { fallback, fallback });
+      return 0.5f * (size.x + size.y);
+    }
+
+    float scalarMaxSpeedFromAnimated(const remixapi_AnimatedFloat3D& values, float fallback = 0.0f) {
+      const auto velocity = sampleAnimated(values, remixapi_Float3D { fallback, fallback, fallback });
+      return std::sqrt(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
     }
 
     Vector3d tovec3d(const remixapi_Float3D& v) {
@@ -634,7 +669,7 @@ namespace {
       desc.initialVelocityFromNormal = info.initialVelocityFromNormal;
       desc.initialVelocityConeAngleDegrees = info.initialVelocityConeAngleDegrees;
       desc.gravityForce = info.gravityForce;
-      desc.maxSpeed = info.maxSpeed;
+      desc.maxSpeed = scalarMaxSpeedFromAnimated(info.maxVelocity);
       desc.motionTrailMultiplier = info.motionTrailMultiplier;
 
       // Turbulence
@@ -642,20 +677,20 @@ namespace {
       desc.turbulenceForce = info.turbulenceForce;
 
       // Spawn
-      desc.minSpawnRotationSpeed = info.minSpawnRotationSpeed;
-      desc.maxSpawnRotationSpeed = info.maxSpawnRotationSpeed;
-      desc.minSpawnSize = info.minSpawnSize;
-      desc.maxSpawnSize = info.maxSpawnSize;
-      desc.minSpawnColor = tovec4(info.minSpawnColor);
-      desc.maxSpawnColor = tovec4(info.maxSpawnColor);
+      desc.minSpawnRotationSpeed = sampleAnimated(info.minRotationSpeed);
+      desc.maxSpawnRotationSpeed = sampleAnimated(info.maxRotationSpeed);
+      desc.minSpawnSize = scalarSizeFromAnimated(info.minSize);
+      desc.maxSpawnSize = scalarSizeFromAnimated(info.maxSize);
+      desc.minSpawnColor = tovec4(sampleAnimated(info.minColor));
+      desc.maxSpawnColor = tovec4(sampleAnimated(info.maxColor));
 
       // Target
-      desc.minTargetRotationSpeed = info.minTargetRotationSpeed;
-      desc.maxTargetRotationSpeed = info.maxTargetRotationSpeed;
-      desc.minTargetSize = info.minTargetSize;
-      desc.maxTargetSize = info.maxTargetSize;
-      desc.minTargetColor = tovec4(info.minTargetColor);
-      desc.maxTargetColor = tovec4(info.maxTargetColor);
+      desc.minTargetRotationSpeed = desc.minSpawnRotationSpeed;
+      desc.maxTargetRotationSpeed = desc.maxSpawnRotationSpeed;
+      desc.minTargetSize = desc.minSpawnSize;
+      desc.maxTargetSize = desc.maxSpawnSize;
+      desc.minTargetColor = desc.minSpawnColor;
+      desc.maxTargetColor = desc.maxSpawnColor;
 
       // Collision
       desc.collisionThickness = info.collisionThickness;
