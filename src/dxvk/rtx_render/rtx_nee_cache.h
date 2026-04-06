@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2023-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -47,14 +47,12 @@ namespace dxvk {
 
     void setRaytraceArgs(RaytraceArgs& raytraceArgs, bool resetHistory) const;
 
-    RTX_OPTION_ARGS("rtx.neeCache", bool, enable, true, "Enable NEE cache. The integrator will perform NEE on emissive triangles, which usually have significant light contributions, stored in the cache.",
-                    args.flags = RtxOptionFlags::UserSetting);
+    RTX_OPTION("rtx.neeCache", bool, enable, true, "Enable NEE cache. The integrator will perform NEE on emissive triangles, which usually have significant light contributions, stored in the cache.");
     RTX_OPTION("rtx.neeCache", bool, enableImportanceSampling, true, "Enable importance sampling.");
     RTX_OPTION("rtx.neeCache", bool, enableMIS, true, "Enable MIS.");
     RTX_OPTION("rtx.neeCache", bool, enableUpdate, true, "Enable Update.");
     RTX_OPTION("rtx.neeCache", bool, enableOnFirstBounce, true, "Enable NEE Cache on a first bounce.");
-    RTX_OPTION_ARGS("rtx.neeCache", NeeEnableMode, enableModeAfterFirstBounce, NeeEnableMode::SpecularOnly, "NEE Cache enable mode on a second and higher bounces. 0 means off, 1 means enabled for specular rays only, 2 means always enabled.",
-                    args.flags = RtxOptionFlags::UserSetting);
+    RTX_OPTION("rtx.neeCache", NeeEnableMode, enableModeAfterFirstBounce, NeeEnableMode::SpecularOnly, "NEE Cache enable mode on a second and higher bounces. 0 means off, 1 means enabled for specular rays only, 2 means always enabled.");
     RTX_OPTION("rtx.neeCache", bool, enableAnalyticalLight, true, "Enable NEE Cache on analytical light.");
     RTX_OPTION("rtx.neeCache", float, specularFactor, 1.0, "Specular component factor.");
     RTX_OPTION("rtx.neeCache", float, learningRate, 0.02, "Learning rate. Higher values makes the cache adapt to lighting changes more quickly.");
@@ -71,9 +69,6 @@ namespace dxvk {
     RTX_OPTION("rtx.neeCache", float, triangleExplorationRangeRatio, 0.1, "Index range to triangle count ratio, when triangle exploration is enabled.");
     RTX_OPTION("rtx.neeCache", float, triangleExplorationAcceptRangeRatio, 0.33, "Accept index range to search range ratio, when triangle exploration is enabled.");
     RTX_OPTION("rtx.neeCache", bool,  enableSpatialReuse, true, "Enable NEE cell share statistics information with neighbors.");
-    RTX_OPTION("rtx.neeCache", bool,  enableReshuffleResilience, true, "Preserve cached light samples through BLAS primitive reshuffles. Reduces flicker when geometry is re-indexed but may show stale lighting for one extra frame when emissive surfaces are removed.");
-    RTX_OPTION_ARGS("rtx.neeCache", int, reshuffleMaxAge, 8, "Maximum consecutive reshuffled frames before forcing a sample refresh. Prevents permanently stale samples from continuously animating emissive geometry (e.g. particle systems). 0 disables the limit.",
-                    args.minValue = 0, args.maxValue = 15);
   private:
     Rc<vk::DeviceFn> m_vkd;
   };

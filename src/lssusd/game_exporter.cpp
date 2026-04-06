@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2021-2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -25,7 +25,6 @@
 #include "../util/log/log.h"
 #include "../util/util_env.h"
 #include "../util/util_string.h"
-#include "../dxvk/rtx_render/rtx_env.h"
 #include "../dxvk/rtx_render/rtx_game_capturer_utils.h"
 
 #include "usd_include_begin.h"
@@ -75,7 +74,6 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
-#include <stdexcept>
 
 // Embedded MDLs
 #include <AperturePBR_Opacity.mdl.h>
@@ -181,16 +179,12 @@ std::string computeLocalPath(const std::string& assetPath) {
   return resolvedPath.GetPathString();
 }
 
-static void throwCaptureError(const std::string& message) {
-  throw std::runtime_error(message);
-}
-
-bool GameExporter::exportUsd(const Export& exportData) {
+void GameExporter::exportUsd(const Export& exportData) {
   if(s_bMultiThreadSafety) {
     std::scoped_lock lock(s_mutex);
-    return exportUsdInternal(exportData);
+    exportUsdInternal(exportData);
   } else {
-    return exportUsdInternal(exportData);
+    exportUsdInternal(exportData);
   }
 }
 
@@ -198,51 +192,33 @@ std::string getExtension(std::filesystem::path path) {
   return path.extension().generic_string();
 }
 
-bool GameExporter::exportUsdInternal(const Export& exportData) {
+void GameExporter::exportUsdInternal(const Export& exportData) {
   dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Export start");
-
-  bool success = true;
-
-  try {
-    ExportContext ctx;
-    lss::GameExporter::createApertureMdls(exportData.baseExportPath);
-    ctx.instanceStage = (exportData.bExportInstanceStage) ? createInstanceStage(exportData) : pxr::UsdStageRefPtr();
-    ctx.extension = (exportData.bExportInstanceStage) ? getExtension(exportData.instanceStagePath) : lss::ext::usd;
-    exportMaterials(exportData, ctx);
-    exportMeshes(exportData, ctx);
-    exportSkeletons(exportData, ctx);
-    if (ctx.instanceStage) {
-      exportCamera(exportData, ctx);
-      exportSphereLights(exportData, ctx);
-      exportDistantLights(exportData, ctx);
-      exportInstances(exportData, ctx);
-      exportSky(exportData, ctx);
-      setCommonStageMetaData(ctx.instanceStage, exportData);
-      ctx.instanceStage->SetStartTimeCode(exportData.meta.startTimeCode);
-      ctx.instanceStage->SetEndTimeCode(exportData.meta.endTimeCode);
-      ctx.instanceStage->Save();
-    }
-  } catch (const std::exception& err) {
-    const auto message = dxvk::str::format("Capture failed:\n", err.what());
-    dxvk::Logger::err(dxvk::str::format("[GameExporter][", exportData.debugId, "] ", message));
-    dxvk::messageBox(message.c_str(), "RTX Remix - Capture Error", 0);
-    success = false;
+  ExportContext ctx;
+  lss::GameExporter::createApertureMdls(exportData.baseExportPath);
+  ctx.instanceStage = (exportData.bExportInstanceStage) ? createInstanceStage(exportData) : pxr::UsdStageRefPtr();
+  ctx.extension = (exportData.bExportInstanceStage) ? getExtension(exportData.instanceStagePath) : lss::ext::usd;
+  exportMaterials(exportData, ctx);
+  exportMeshes(exportData, ctx);
+  exportSkeletons(exportData, ctx);
+  if(ctx.instanceStage) {
+    exportCamera(exportData, ctx);
+    exportSphereLights(exportData, ctx);
+    exportDistantLights(exportData, ctx);
+    exportInstances(exportData, ctx);
+    exportSky(exportData, ctx);
+    setCommonStageMetaData(ctx.instanceStage, exportData);
+    ctx.instanceStage->SetStartTimeCode(exportData.meta.startTimeCode);
+    ctx.instanceStage->SetEndTimeCode(exportData.meta.endTimeCode);
+    ctx.instanceStage->Save();
   }
   dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Export end");
-
-  return success;
 }
 
 pxr::UsdStageRefPtr GameExporter::createInstanceStage(const Export& exportData) {
   assert(exportData.bExportInstanceStage);
   pxr::UsdStageRefPtr instanceStage = pxr::UsdStage::CreateNew(exportData.instanceStagePath);
-  if (!instanceStage) {
-    const auto message = dxvk::str::format(
-      "Failed to create capture stage:\n",
-      exportData.instanceStagePath,
-      "\n\nCheck that the folder exists and is writable, then try again.");
-    throwCaptureError(message);
-  }
+  assert(instanceStage);
   const auto rootPrim = instanceStage->DefinePrim(gRootNodePath);
   assert(rootPrim);
   instanceStage->SetDefaultPrim(rootPrim);
@@ -261,11 +237,11 @@ pxr::UsdStageRefPtr GameExporter::createInstanceStage(const Export& exportData) 
   // capture meta data
   pxr::VtDictionary customLayerData;
   customLayerData.SetValueAtPath("lightspeed_layer_type", pxr::VtValue("capture"));
-  customLayerData.SetValueAtPath("lightspeed_game_name", pxr::VtValue(dxvk::str::sanitizeUtf8(exportData.meta.windowTitle)));
-  customLayerData.SetValueAtPath("lightspeed_exe_name", pxr::VtValue(dxvk::str::sanitizeUtf8(exportData.meta.exeName)));
+  customLayerData.SetValueAtPath("lightspeed_game_name", pxr::VtValue(dxvk::str::stripNonAscii(exportData.meta.windowTitle)));
+  customLayerData.SetValueAtPath("lightspeed_exe_name", pxr::VtValue(dxvk::str::stripNonAscii(exportData.meta.exeName)));
   const auto relToCaptureIconPath = std::filesystem::relative(exportData.meta.iconPath, exportData.baseExportPath).string();
-  customLayerData.SetValueAtPath("lightspeed_game_icon", pxr::VtValue(dxvk::str::sanitizeUtf8(relToCaptureIconPath)));
-  customLayerData.SetValueAtPath("lightspeed_geometry_hash_rules", pxr::VtValue(dxvk::str::sanitizeUtf8(exportData.meta.geometryHashRule)));
+  customLayerData.SetValueAtPath("lightspeed_game_icon", pxr::VtValue(dxvk::str::stripNonAscii(relToCaptureIconPath)));
+  customLayerData.SetValueAtPath("lightspeed_geometry_hash_rules", pxr::VtValue(dxvk::str::stripNonAscii(exportData.meta.geometryHashRule)));
   instanceStage->GetRootLayer()->SetCustomLayerData(customLayerData);
 
   return instanceStage;
@@ -1262,25 +1238,13 @@ pxr::UsdStageRefPtr GameExporter::findOpenOrCreateStage(const std::string path, 
     pxr::SdfLayerRefPtr alreadyExistentLayer;
     if(bLayerAlreadyExists) {
       alreadyExistentLayer = pxr::SdfLayer::FindOrOpen(path);
-      if (!alreadyExistentLayer) {
-        const auto message = dxvk::str::format(
-          "Failed to open capture layer:\n",
-          path,
-          "\n\nCheck that the folder exists and is writable, then try again.");
-        throwCaptureError(message);
-      }
+      assert(alreadyExistentLayer);
       if(bClearIfExists) {
         alreadyExistentLayer->Clear();
       }
     }
     auto stage = (bLayerAlreadyExists) ? pxr::UsdStage::Open(alreadyExistentLayer) : pxr::UsdStage::CreateNew(path);
-    if (!stage) {
-      const auto message = dxvk::str::format(
-        "Failed to create capture stage:\n",
-        path,
-        "\n\nCheck that the folder exists and is writable, then try again.");
-      throwCaptureError(message);
-    }
+    assert(stage);
     return stage;
 }
 

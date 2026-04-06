@@ -1,6 +1,7 @@
 #include "dxgi_factory.h"
 #include "dxgi_swapchain.h"
 #include "dxgi_swapchain_dispatcher.h"
+#include "dxgi_trace.h"
 
 namespace dxvk {
 
@@ -9,8 +10,10 @@ namespace dxvk {
     m_monitorInfo (this),
     m_options     (m_instance->config()),
     m_flags       (Flags) {
+    DxgiEarlyTrace("DxgiFactory ctor begin");
     for (uint32_t i = 0; m_instance->enumAdapters(i) != nullptr; i++)
       m_instance->enumAdapters(i)->logAdapterInfo();
+    DxgiEarlyTrace("DxgiFactory ctor complete");
   }
   
   
@@ -20,6 +23,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiFactory::QueryInterface(REFIID riid, void** ppvObject) {
+    DxgiEarlyTrace("DxgiFactory::QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -81,6 +85,7 @@ namespace dxvk {
           IUnknown*             pDevice,
           DXGI_SWAP_CHAIN_DESC* pDesc,
           IDXGISwapChain**      ppSwapChain) {
+    DxgiEarlyTrace("DxgiFactory::CreateSwapChain enter");
     if (ppSwapChain == nullptr || pDesc == nullptr || pDevice == nullptr)
       return DXGI_ERROR_INVALID_CALL;
     
@@ -108,6 +113,10 @@ namespace dxvk {
       pDevice, pDesc->OutputWindow,
       &desc, &descFs, nullptr,
       &swapChain);
+
+    char hrMessage[128];
+    std::snprintf(hrMessage, sizeof(hrMessage), "DxgiFactory::CreateSwapChain hr=0x%08lX", static_cast<unsigned long>(hr));
+    DxgiEarlyTrace(hrMessage);
     
     *ppSwapChain = swapChain;
     return hr;
@@ -121,6 +130,7 @@ namespace dxvk {
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
           IDXGIOutput*          pRestrictToOutput,
           IDXGISwapChain1**     ppSwapChain) {
+            DxgiEarlyTrace("DxgiFactory::CreateSwapChainForHwnd enter");
     InitReturnPtr(ppSwapChain);
     
     if (!ppSwapChain || !pDesc || !hWnd || !pDevice)
@@ -131,11 +141,16 @@ namespace dxvk {
     if (SUCCEEDED(pDevice->QueryInterface(
           __uuidof(IWineDXGISwapChainFactory),
           reinterpret_cast<void**>(&wineDevice)))) {
+      DxgiEarlyTrace("DxgiFactory::CreateSwapChainForHwnd device supports IWineDXGISwapChainFactory");
       IDXGISwapChain4* frontendSwapChain;
 
       HRESULT hr = wineDevice->CreateSwapChainForHwnd(
         this, hWnd, pDesc, pFullscreenDesc,
         pRestrictToOutput, reinterpret_cast<IDXGISwapChain1**>(&frontendSwapChain));
+
+      char hrMessage[160];
+      std::snprintf(hrMessage, sizeof(hrMessage), "DxgiFactory::CreateSwapChainForHwnd frontend hr=0x%08lX", static_cast<unsigned long>(hr));
+      DxgiEarlyTrace(hrMessage);
 
       // No ref as that's handled by the object we're wrapping
       // which was ref'ed on creation.
@@ -145,6 +160,7 @@ namespace dxvk {
       return hr;
     }
     
+    DxgiEarlyTrace("DxgiFactory::CreateSwapChainForHwnd unsupported device type");
     Logger::err("DXGI: CreateSwapChainForHwnd: Unsupported device type");
     return DXGI_ERROR_UNSUPPORTED;
   }

@@ -107,7 +107,7 @@ namespace dxvk {
     auto& rtxio = RtxIo::get();
     
     RtxIo::Handle file;
-    if (rtxio.openFile(texture->m_assetData->info().filename, &file)) {
+    if (rtxio.openFile(texture->assetData->info().filename, &file)) {
       uint64_t completionSyncpt = 0;
 
       for (uint32_t layer = 0; layer < dstImage->info().numLayers; layer++) {
@@ -115,13 +115,13 @@ namespace dxvk {
                                                          layer,
                                                          mipLevels_begin,
                                                          mipLevels_end,
-                                                         texture->m_assetData,
+                                                         texture->assetData,
                                                          file);
       }
 
       if (completionSyncpt) {
-        assert(texture->m_state == ManagedTexture::State::kQueuedForUpload);
-        texture->m_completionSyncpt = completionSyncpt;
+        assert(texture->state == ManagedTexture::State::kQueuedForUpload);
+        texture->completionSyncpt = completionSyncpt;
       }
     }
 #endif
@@ -131,22 +131,14 @@ namespace dxvk {
   {
     Rc<ManagedTexture> texture = new ManagedTexture();
 
-    texture->m_assetData = assetData;
-    texture->m_colorSpace = colorSpace;
-    texture->m_uniqueKey = RtxTextureManager::getUniqueKey();
-    texture->m_state = ManagedTexture::State::kInitialized;
-
-    return texture;
-  }
-
-  DxvkImageCreateInfo ManagedTexture::imageCreateInfo() const {
-    const AssetInfo& assetInfo = m_assetData->info();
+    auto& assetInfo = assetData->info();
 
     // The nvtt_exporter tool used for png->dds conversion in the TREX export cannot specify SRGB, so we rely on the USD color space
     // setting, and override the format here.  Only applies to BC* formats, since that's all the png->dds conversion flow will generate.
-    VkFormat format = m_colorSpace == ColorSpace::FORCE_BC_SRGB ? TextureUtils::toSRGB(assetInfo.format) : assetInfo.format;
+    VkFormat format = colorSpace == ColorSpace::FORCE_BC_SRGB ? toSRGB(assetInfo.format) : assetInfo.format;
 
-    DxvkImageCreateInfo desc{};
+    // Initialize image create info
+    DxvkImageCreateInfo& desc = texture->futureImageDesc;
     desc.type = VK_IMAGE_TYPE_2D;
     desc.format = format;
     desc.flags = 0;
@@ -155,13 +147,16 @@ namespace dxvk {
     desc.numLayers = assetInfo.numLayers;
     desc.mipLevels = assetInfo.mipLevels;
     desc.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    desc.stages =
-      VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-      | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+    desc.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
     desc.access = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
     desc.tiling = VK_IMAGE_TILING_OPTIMAL;
     desc.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    return desc;
+
+    texture->assetData = assetData;
+    texture->uniqueKey = RtxTextureManager::getUniqueKey();
+    texture->state = ManagedTexture::State::kInitialized;
+
+    return texture;
   }
 
   uint16_t clampMipCountToAvailable(const Rc<AssetData>& assetData, uint32_t targetMipCount) {
@@ -184,15 +179,15 @@ namespace dxvk {
     assert(m_currentMip_begin <= m_currentMip_end);
     const uint32_t uploaded = m_currentMip_end - m_currentMip_begin;
 
-    return exact ? (clampMipCountToAvailable(m_assetData, uploaded) == clampMipCountToAvailable(m_assetData, requiredMips))
-                 : (clampMipCountToAvailable(m_assetData, uploaded) >= clampMipCountToAvailable(m_assetData, requiredMips));
+    return exact ? (clampMipCountToAvailable(assetData, uploaded) == clampMipCountToAvailable(assetData, requiredMips))
+                 : (clampMipCountToAvailable(assetData, uploaded) >= clampMipCountToAvailable(assetData, requiredMips));
   }
 
   void ManagedTexture::requestMips(uint32_t requiredMips) {
     static_assert(MAX_MIPS <= std::numeric_limits<decltype(m_requestedMips)::value_type>::max());
     assert(requiredMips <= MAX_MIPS);
 
-    if (!m_canDemote) {
+    if (!canDemote) {
       requiredMips = MAX_MIPS;
     }
 
@@ -200,9 +195,9 @@ namespace dxvk {
   }
 
   std::pair<uint16_t, uint16_t> ManagedTexture::calcRequiredMips_BeginEnd() const {
-    const uint32_t mipCountToLoad = clampMipCountToAvailable(m_assetData, uint32_t(m_requestedMips));
+    const uint32_t mipCountToLoad = clampMipCountToAvailable(assetData, uint32_t(m_requestedMips));
 
-    const uint32_t mip_end = m_assetData->info().mipLevels;
+    const uint32_t mip_end = assetData->info().mipLevels;
     const uint16_t mip_begin = uint16_t(mip_end - mipCountToLoad);
 
     return { mip_begin, mip_end };

@@ -29,7 +29,6 @@
 #include "rtx_types.h"
 #include "rtx_common_object.h"
 #include "rtx_staging.h"
-#include "rtx_point_instancer_system.h"
 #include "../util/util_vector.h"
 #include "../util/util_matrix.h"
 
@@ -58,7 +57,6 @@ class AccelManager : public CommonDeviceObject {
     bool usesUnorderedApproximations = false;
     uint32_t reorderedSurfacesOffset = UINT32_MAX;
     bool hasOmmInstances = false;
-    bool hasSssInstances = false;
     
     // Tries to add a geometry instance to the bucket. The addition is successful if either:
     //   a) the bucket is empty,
@@ -105,12 +103,6 @@ public:
                               const std::vector<TextureRef>& textures, const CameraManager& cameraManager, 
                               InstanceManager& instanceManager, OpacityMicromapManager* opacityMicromapManager);
 
-  // Dispatches GPU compute culling for all PointInstancer batches recorded during
-  // mergeInstancesIntoBlas. Must be called after prepareSceneData (placeholders uploaded)
-  // and before buildTlas.
-  void dispatchPointInstancerCulling(Rc<DxvkContext> ctx, const CameraManager& cameraManager,
-                                     const Rc<DxvkBuffer>& surfaceMaterialBuffer);
-
   void buildTlas(Rc<DxvkContext> ctx);
 
   // Returns the number of live BLAS objects
@@ -136,7 +128,6 @@ private:
   struct {
     std::vector<unsigned char> surfacesGPUData;
     std::vector<uint32_t> surfaceIndexMapping;
-    uint32_t previousFrameSurfaceCount = 0; // Tracks last frame's surface count for mapping coverage
   } uploadSurfaceDataFuncState;
 
   void buildBlases(Rc<DxvkContext> ctx, DxvkBarrierSet& execBarriers,
@@ -146,10 +137,7 @@ private:
                    std::vector<VkAccelerationStructureBuildGeometryInfoKHR>& blasToBuild,
                    std::vector<VkAccelerationStructureBuildRangeInfoKHR*>& blasRangesToBuild,
                    size_t& currentScratchOffset);
-  
   void addBlas(RtInstance* instance, BlasEntry* blasEntry, const Matrix4* instanceToObject);
-  void addPointInstancerBlas(RtInstance* rtInstance, BlasEntry* blasEntry);
-
   void createBlasBuffersAndInstances(Rc<DxvkContext> ctx, 
                                      const std::vector<std::unique_ptr<BlasBucket>>& blasBuckets,
                                      std::vector<VkAccelerationStructureBuildGeometryInfoKHR>& blasToBuild,
@@ -168,14 +156,6 @@ private:
   std::vector<uint32_t> m_reorderedSurfacesPrimitiveIDPrefixSumLastFrame;     // Exclusive prefix sum for last frame's surface primitive count array
   std::vector<VkAccelerationStructureInstanceKHR> m_mergedInstances[Tlas::Count];
   std::vector<Rc<PooledBlas>> m_blasPool;
-
-  // GPU-driven PointInstancer culling batches, recorded per frame in mergeInstancesIntoBlas
-  std::vector<PointInstancerBatch> m_pointInstancerBatches;
-
-  // Number of VkAccelerationStructureInstanceKHR slots reserved for PointInstancer
-  // instances in each TLAS type.  These slots are NOT stored in m_mergedInstances —
-  // the GPU culling shader fills them directly in the instance buffer.
-  uint32_t m_pointInstancerSlotsPerType[Tlas::Count] = {};
 
   Rc<DxvkBuffer> m_vkInstanceBuffer; // Note: Holds Vulkan AS Instances, not RtInstances
   Rc<DxvkBuffer> m_surfaceBuffer;

@@ -473,7 +473,7 @@ namespace dxvk {
   }
 
   void Resources::createConstantsBuffer() {
-    DxvkBufferCreateInfo info;
+    DxvkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
     info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1011,9 +1011,9 @@ namespace dxvk {
     m_raytracingOutput.m_sharedMaterialData1 = createImageResource(ctx, "shared material data 1", m_downscaledExtent, VK_FORMAT_R32_UINT);
     // Note: This value is isolated rather than being packed with other data (such as the alpha channel combined with the Shared Radiance RGB) so that
     // reads/writes to it do not bring in extra unneeded data into the cachelines (as we don't need that shared radiance information except in compositing).
-    m_raytracingOutput.m_sharedMediumMaterialIndex = createImageResource(ctx, "shared medium material index", m_downscaledExtent, VK_FORMAT_R32_UINT);
+    m_raytracingOutput.m_sharedMediumMaterialIndex = createImageResource(ctx, "shared medium material index", m_downscaledExtent, VK_FORMAT_R16_UINT);
     m_raytracingOutput.m_sharedBiasCurrentColorMask = AliasedResource(ctx, m_downscaledExtent, VK_FORMAT_R8_UNORM, "Shared Attenuation", allowCompatibleFormatAliasing);
-    m_raytracingOutput.m_sharedSurfaceIndex = AliasedResource(ctx, m_downscaledExtent, VK_FORMAT_R32_UINT, "shared surface index", allowCompatibleFormatAliasing);
+    m_raytracingOutput.m_sharedSurfaceIndex = AliasedResource(ctx, m_downscaledExtent, VK_FORMAT_R16_UINT, "shared surface index", allowCompatibleFormatAliasing);
 
     m_raytracingOutput.m_primaryAttenuation = createImageResource(ctx, "primary attenuation", m_downscaledExtent, VK_FORMAT_R32_UINT);
     m_raytracingOutput.m_primaryWorldShadingNormal = createImageResource(ctx, "primary world shading normal", m_downscaledExtent, VK_FORMAT_R32_UINT);
@@ -1052,7 +1052,7 @@ namespace dxvk {
 
     m_raytracingOutput.m_primarySurfaceFlags = createImageResource(ctx, "primary surface flags", m_downscaledExtent, VK_FORMAT_R8_UINT);
     m_raytracingOutput.m_primaryDisocclusionThresholdMix = createImageResource(ctx, "primary disocclusion threshold mix", m_downscaledExtent, VK_FORMAT_R16_SFLOAT);
-    m_raytracingOutput.m_primaryDisocclusionMaskForRR = AliasedResource(m_raytracingOutput.m_sharedSurfaceIndex, ctx, m_downscaledExtent, VK_FORMAT_R32_SFLOAT, "primary disocclusion mask for ray reconstruction", allowCompatibleFormatAliasing);
+    m_raytracingOutput.m_primaryDisocclusionMaskForRR = AliasedResource(m_raytracingOutput.m_sharedSurfaceIndex, ctx, m_downscaledExtent, VK_FORMAT_R16_SFLOAT, "primary disocclusion mask for ray reconstruction", allowCompatibleFormatAliasing);
 
     if (m_raytracingOutput.m_primaryObjectPicking.isValid()) {
       m_raytracingOutput.m_primaryObjectPicking = createImageResource(ctx, "primary object picking", m_downscaledExtent, VK_FORMAT_R32_UINT);
@@ -1126,7 +1126,7 @@ namespace dxvk {
     int renderWidthBlocks = (m_downscaledExtent.width + RTXDI_RESERVOIR_BLOCK_SIZE - 1) / RTXDI_RESERVOIR_BLOCK_SIZE;
     int renderHeightBlocks = (m_downscaledExtent.height + RTXDI_RESERVOIR_BLOCK_SIZE - 1) / RTXDI_RESERVOIR_BLOCK_SIZE;
     int reservoirBufferPixels = renderWidthBlocks * renderHeightBlocks * RTXDI_RESERVOIR_BLOCK_SIZE * RTXDI_RESERVOIR_BLOCK_SIZE;
-    DxvkBufferCreateInfo rtxdiBufferInfo;
+    DxvkBufferCreateInfo rtxdiBufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     rtxdiBufferInfo.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     rtxdiBufferInfo.stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     rtxdiBufferInfo.access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -1154,7 +1154,7 @@ namespace dxvk {
     {
       const uint32_t bufferLength = kMaxFramesInFlight;
 
-      DxvkBufferCreateInfo gpuPrintBufferInfo;
+      DxvkBufferCreateInfo gpuPrintBufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
       gpuPrintBufferInfo.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
       gpuPrintBufferInfo.stages = VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
       gpuPrintBufferInfo.access = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;

@@ -272,13 +272,6 @@ namespace dxvk {
     return false;
   }
 
-  bool DrawCallState::isEye() const {
-    if (RtxOptions::Eye::enable() && RtxOptions::Eye::assumeViewTexgenModeAsEye()) {
-      return getTransformData().texgenMode == TexGenMode::ViewPositions;
-    }
-    return false;
-  }
-
   bool DrawCallState::finalizeGeometryHashes() {
     if (!geometryData.futureGeometryHashes.valid()) {
       return false;
@@ -486,13 +479,7 @@ namespace dxvk {
     return false;
   }
 
-  enum class SkyDetectionSource {
-    None,
-    Explicit,   // minZ, texHash, geoHash, dcIdThreshold
-    AutoDetect  // checkSkyAutoDetect
-  };
-
-  SkyDetectionSource shouldBakeSky(const DrawCallState& drawCallState,
+  bool shouldBakeSky(const DrawCallState& drawCallState,
                      bool hasSkinning,
                      uint32_t prevFrameSeenCamerasCount,
                      std::vector<Vector3>& seenCameraPositions) {           
@@ -520,7 +507,7 @@ namespace dxvk {
 
 
     if (drawCallState.minZ >= RtxOptions::skyMinZThreshold()) {
-      return SkyDetectionSource::Explicit;
+      return true;
     }
 
     // NOTE: we use color texture hash for sky detection, however the replacement is hashed with
@@ -529,11 +516,11 @@ namespace dxvk {
 
     if (drawCallState.getMaterialData().usesTexture()) {
       if (lookupHash(RtxOptions::skyBoxTextures(), drawCallState.getMaterialData().getHash())) {
-        return SkyDetectionSource::Explicit;
+        return true;
       }
     } else {
       if (drawCallState.drawCallID < RtxOptions::skyDrawcallIdThreshold()) {
-        return SkyDetectionSource::Explicit;
+        return true;
       }
     }
 
@@ -544,10 +531,10 @@ namespace dxvk {
                            drawCallCameraPos,
                            prevFrameSeenCamerasCount,
                            drawCallState.isDrawingToRaytracedRenderTarget ? renderTargetCameraPositions : seenCameraPositions)) {
-      return SkyDetectionSource::AutoDetect;
+      return true;
     }
 
-    return SkyDetectionSource::None;
+    return false;
   }
 
   bool shouldBakeTerrain(const DrawCallState& drawCallState) {
@@ -559,13 +546,10 @@ namespace dxvk {
 
   void DrawCallState::setupCategoriesForHeuristics(uint32_t prevFrameSeenCamerasCount,
                                                    std::vector<Vector3>& seenCameraPositions) {
-    const SkyDetectionSource skySource = shouldBakeSky(*this,
+    setCategory(InstanceCategories::Sky, shouldBakeSky(*this,
                                                        futureSkinningData.valid(),
                                                        prevFrameSeenCamerasCount,
-                                                       seenCameraPositions);
-    setCategory(InstanceCategories::Sky, skySource != SkyDetectionSource::None);
-    skyAutoDetected = (skySource == SkyDetectionSource::AutoDetect);
-
+                                                       seenCameraPositions));
     setCategory(InstanceCategories::Terrain, shouldBakeTerrain(*this));
   }
 

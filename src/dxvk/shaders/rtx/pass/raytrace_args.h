@@ -85,9 +85,7 @@ struct NeeCacheArgs {
   float triangleExplorationProbability;
   float triangleExplorationAcceptRangeRatio;
 
-  uint padding;
-  uint enableReshuffleResilience;
-  uint reshuffleMaxAge;
+  uint3 padding;
   uint enableSpatialReuse;
 };
 
@@ -106,18 +104,6 @@ struct SssArgs {
   uint enableDiffusionProfile;
   float diffusionProfileScale;
   u16vec2 diffusionProfileDebuggingPixel;
-};
-
-struct EyeArgs {
-  uint  enableEyes;
-  float normalBendingEyeball;
-  float normalBendingCornea;
-  float whitesAlbedoScale;
-
-  float irisRadius;
-  float irisDepth;
-  uint  pad0;
-  uint  pad1;
 };
 
 #define OBJECT_PICKING_INVALID (cb.clearColorPicking)
@@ -152,7 +138,6 @@ struct RaytraceArgs {
   DomeLightArgs domeLightArgs;
   NrcArgs nrcArgs;
   SssArgs sssArgs;
-  EyeArgs eyeArgs;
 
   Camera renderTargetCamera;
 
@@ -358,7 +343,7 @@ struct RaytraceArgs {
   float resolveStochasticAlphaBlendThreshold;
   float translucentDecalAlbedoFactor;
 
-  uint enableHeuristicSingleScatteringTransmission;
+  float pad;
 
   float skyBrightness;
 
@@ -396,7 +381,7 @@ struct RaytraceArgs {
   uint allowNrcTraining;
 
   float vertexColorStrength;
-  float alphaBlendSurfacePackMult; // for packing/unpacking hitT into Float16 in AlphaBlendSurface
+  uint pad0;
 
   float wboitEnergyLossCompensation;
   float wboitDepthWeightTuning;

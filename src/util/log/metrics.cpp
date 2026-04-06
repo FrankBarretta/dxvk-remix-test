@@ -22,7 +22,6 @@
 #include "metrics.h"
 
 #include "../util_env.h"
-#include "../util_string.h"
 #include "util_math.h"
 
 namespace dxvk {

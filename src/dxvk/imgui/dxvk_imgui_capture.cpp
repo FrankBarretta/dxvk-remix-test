@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2023-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -34,6 +34,10 @@
 
 #include <filesystem>
 
+namespace {
+  static constexpr ImGuiTreeNodeFlags kCollapsingHeaderFlags = ImGuiTreeNodeFlags_CollapsingHeader;
+}
+
 namespace dxvk {
   void ImGuiCapture::update(const Rc<DxvkContext>& ctx) {
     const bool hotkey = ImGUI::checkHotkeyState(RtxOptions::captureHotKey());
@@ -55,7 +59,8 @@ namespace dxvk {
     const bool disableCapture =
       ctx->getCommonObjects()->getSceneManager().areAllReplacementsLoaded() &&
       RtxOptions::getEnableAnyReplacements();
-    if(RemixGui::CollapsingHeader("USD Scene Capture", ImGuiTreeNodeFlags_DefaultOpen)) {
+    constexpr auto headerFlagsDefaultOpen = kCollapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen;
+    if(ImGui::CollapsingHeader("USD Scene Capture", headerFlagsDefaultOpen)) {
       ImGui::Indent();
       ImGui::Text(disableCapture ? "Disable enhanced assets to enable capturing." : "Ready to capture.");
       ImGui::BeginDisabled(disableCapture);
@@ -64,9 +69,9 @@ namespace dxvk {
         showTimedCapture(ctx);
         showContinuousCapture(ctx);
       }
-      RemixGui::Separator();
-      RemixGui::Checkbox("Correct baked world transforms", &GameCapturer::correctBakedTransformsObject());
-      RemixGui::Checkbox("Show menu on capture hotkey", &RtxOptions::captureShowMenuOnHotkeyObject());
+      ImGui::Separator();
+      ImGui::Checkbox("Correct baked world transforms", &GameCapturer::correctBakedTransformsObject());
+      ImGui::Checkbox("Show menu on capture hotkey", &RtxOptions::captureShowMenuOnHotkeyObject());
       if(RtxOptions::captureShowMenuOnHotkey()) {
         ImGui::PushTextWrapPos(ImGui::GetCurrentWindow()->Size.x);
         ImGui::PopTextWrapPos();
@@ -106,23 +111,22 @@ namespace dxvk {
     }
     commonButtonWidth = std::max(firstButtonWidth, ImGui::GetItemRectSize().x);
     m_stageNameInputBox.validateStageName();
-    RemixGui::Checkbox("Overwrite existing capture", &RtxOptions::captureOverwriteExistingCaptureObject());
     m_progress.show(ctx);
   }
 
   void ImGuiCapture::showTimedCapture(const Rc<DxvkContext>& ctx) {
-    if(RemixGui::CollapsingHeader("Timed Capture")) {
+    if(ImGui::CollapsingHeader("Timed Capture", kCollapsingHeaderFlags)) {
       ImGui::Indent();
-      RemixGui::InputInt("Max Frames", &RtxOptions::captureMaxFramesObject());
-      RemixGui::InputInt("Frames Per Second", &RtxOptions::captureFramesPerSecondObject());
-      if(RemixGui::CollapsingHeader("Animation Compression")) {
+      ImGui::InputInt("Max Frames", &RtxOptions::captureMaxFramesObject());
+      ImGui::InputInt("Frames Per Second", &RtxOptions::captureFramesPerSecondObject());
+      if(ImGui::CollapsingHeader("Animation Compression", kCollapsingHeaderFlags)) {
         ImGui::Indent();
         ImGui::Text("Inter-frame Mesh Deltas");
-        RemixGui::InputFloat("Position",&RtxOptions::captureMeshPositionDeltaObject());
-        RemixGui::InputFloat("Normal",&RtxOptions::captureMeshNormalDeltaObject());
-        RemixGui::InputFloat("Texcoord",&RtxOptions::captureMeshTexcoordDeltaObject());
-        RemixGui::InputFloat("Color",&RtxOptions::captureMeshColorDeltaObject());
-        RemixGui::InputFloat("Blend Weight",&RtxOptions::captureMeshBlendWeightDeltaObject());
+        ImGui::InputFloat("Position",&RtxOptions::captureMeshPositionDeltaObject());
+        ImGui::InputFloat("Normal",&RtxOptions::captureMeshNormalDeltaObject());
+        ImGui::InputFloat("Texcoord",&RtxOptions::captureMeshTexcoordDeltaObject());
+        ImGui::InputFloat("Color",&RtxOptions::captureMeshColorDeltaObject());
+        ImGui::InputFloat("Blend Weight",&RtxOptions::captureMeshBlendWeightDeltaObject());
         ImGui::Unindent();
       }
       ImGui::Unindent();
@@ -130,7 +134,7 @@ namespace dxvk {
   }
 
   void ImGuiCapture::showContinuousCapture(const Rc<DxvkContext>& ctx) {
-    if(RemixGui::CollapsingHeader("Continuous Capture")) {
+    if(ImGui::CollapsingHeader("Continuous Capture", kCollapsingHeaderFlags)) {
     }
   }
 
@@ -220,13 +224,6 @@ namespace dxvk {
     if (state != m_prevState) {
       m_prevState = state;
       m_output.clear();
-      m_failed = false;
-      if (state.has<GameCapturer::State::Failed>()) {
-        m_percent = 0.f;
-        m_failed = true;
-        m_output.push_back("Capture failed. See dialog or log for details.");
-        return;
-      }
       if (state.has<GameCapturer::State::Complete>()) {
         const auto& completedCapture =
           ctx->getCommonObjects()->capturer()->queryCompleteCapture();
@@ -269,23 +266,15 @@ namespace dxvk {
   
   void ImGuiCapture::Progress::show(const Rc<DxvkContext>& ctx) {
     ImGui::Text("Progress");
-    const ImVec4 barColor = m_failed
-      ? ImVec4{ 0.62f, 0.16f, 0.14f, 1.0f }
-      : ImVec4{ 0.268f, 0.42f, 0.03f, 1.0f };
+    static const ImVec4 barColor = ImVec4{ 0.268f, 0.42f, 0.03f, 1.0f };
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, barColor);
     ImGui::ProgressBar(m_percent);
     ImGui::PopStyleColor();
     ImGui::PushTextWrapPos(ImGui::GetItemRectSize().x);
-    if (m_failed) {
-      ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 64, 64, 255));
-    }
     for(const auto& outputLine : m_output) {
       ImGui::Text(outputLine.c_str());
     }
-    if (m_failed) {
-      ImGui::PopStyleColor();
-    }
-    if (!m_failed && m_prevState.has<GameCapturer::State::Complete>() &&
+    if (m_prevState.has<GameCapturer::State::Complete>() &&
         ImGui::SmallButton("Copy Full Path")) {
       const std::string toCopy =
         RtxOptions::captureInstances() ? m_capturePath : util::RtxFileSys::path(util::RtxFileSys::Captures).string();

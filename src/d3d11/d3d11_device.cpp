@@ -16,14 +16,30 @@
 #include "d3d11_interop.h"
 #include "d3d11_query.h"
 #include "d3d11_resource.h"
+#include "d3d11_rtx.h"
 #include "d3d11_sampler.h"
 #include "d3d11_shader.h"
 #include "d3d11_state_object.h"
 #include "d3d11_swapchain.h"
 #include "d3d11_texture.h"
+#include "d3d11_trace.h"
 #include "d3d11_video.h"
 
 namespace dxvk {
+
+  namespace {
+    Rc<DxvkDevice> CreateDxvkDeviceForD3D11(
+      const Rc<DxvkInstance>& dxvkInstance,
+      const Rc<DxvkAdapter>& dxvkAdapter,
+      D3D_FEATURE_LEVEL featureLevel) {
+      D3D11EarlyTrace("D3D11DXGIDevice CreateDxvkDeviceForD3D11 begin");
+      DxvkDeviceFeatures deviceFeatures = D3D11Device::GetDeviceFeatures(dxvkAdapter, featureLevel);
+      D3D11EarlyTrace("D3D11DXGIDevice CreateDxvkDeviceForD3D11 features ready");
+      Rc<DxvkDevice> device = dxvkAdapter->createDevice(dxvkInstance, deviceFeatures);
+      D3D11EarlyTrace("D3D11DXGIDevice CreateDxvkDeviceForD3D11 device created");
+      return device;
+    }
+  }
   
   constexpr uint32_t D3D11DXGIDevice::DefaultFrameLatency;
 
@@ -40,10 +56,15 @@ namespace dxvk {
     m_dxvkAdapter   (m_dxvkDevice->adapter()),
     m_d3d11Formats  (m_dxvkAdapter),
     m_d3d11Options  (m_dxvkDevice->instance()->config(), m_dxvkDevice),
-    m_dxbcOptions   (m_dxvkDevice, m_d3d11Options) {
+    m_dxbcOptions   (m_dxvkDevice, m_d3d11Options),
+    m_rtx           (this) {
+    D3D11EarlyTrace("D3D11Device ctor begin");
     m_initializer = new D3D11Initializer(this);
+    D3D11EarlyTrace("D3D11Device ctor created initializer");
     m_context     = new D3D11ImmediateContext(this, m_dxvkDevice);
+    D3D11EarlyTrace("D3D11Device ctor created immediate context");
     m_d3d10Device = new D3D10Device(this, m_context.ptr());
+    D3D11EarlyTrace("D3D11Device ctor complete");
   }
   
   
@@ -1786,6 +1807,11 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11Device::GetImmediateContext(ID3D11DeviceContext** ppImmediateContext) {
+    static bool s_loggedGetImmediateContext = false;
+    if (!s_loggedGetImmediateContext) {
+      s_loggedGetImmediateContext = true;
+      D3D11EarlyTrace("D3D11Device::GetImmediateContext");
+    }
     *ppImmediateContext = m_context.ref();
   }
 
@@ -1927,7 +1953,7 @@ namespace dxvk {
     enabled.core.features.shaderStorageImageWriteWithoutFormat    = VK_TRUE;
     enabled.core.features.depthBounds                             = supported.core.features.depthBounds;
 
-    enabled.shaderDrawParameters.shaderDrawParameters             = VK_TRUE;
+    enabled.vulkan11Features.shaderDrawParameters                = VK_TRUE;
 
     enabled.extMemoryPriority.memoryPriority                      = supported.extMemoryPriority.memoryPriority;
 
@@ -1956,7 +1982,7 @@ namespace dxvk {
       enabled.core.features.shaderCullDistance                    = VK_TRUE;
       enabled.core.features.textureCompressionBC                  = VK_TRUE;
       enabled.extDepthClipEnable.depthClipEnable                  = supported.extDepthClipEnable.depthClipEnable;
-      enabled.extHostQueryReset.hostQueryReset                    = supported.extHostQueryReset.hostQueryReset;
+      enabled.vulkan12Features.hostQueryReset                     = supported.vulkan12Features.hostQueryReset;
     }
     
     if (featureLevel >= D3D_FEATURE_LEVEL_9_2) {
@@ -3086,14 +3112,14 @@ namespace dxvk {
   : m_dxgiAdapter   (pAdapter),
     m_dxvkInstance  (pDxvkInstance),
     m_dxvkAdapter   (pDxvkAdapter),
-    m_dxvkDevice    (CreateDevice(FeatureLevel)),
+    m_dxvkDevice    (CreateDxvkDeviceForD3D11(pDxvkInstance, pDxvkAdapter, FeatureLevel)),
     m_d3d11Device   (this, FeatureLevel, FeatureFlags),
     m_d3d11DeviceExt(this, &m_d3d11Device),
     m_d3d11Interop  (this, &m_d3d11Device),
     m_d3d11Video    (this, &m_d3d11Device),
     m_metaDevice    (this),
     m_wineFactory   (this, &m_d3d11Device) {
-
+    D3D11EarlyTrace("D3D11DXGIDevice ctor complete");
   }
   
   

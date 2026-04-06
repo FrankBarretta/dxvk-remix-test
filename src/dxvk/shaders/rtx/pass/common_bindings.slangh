@@ -64,21 +64,17 @@ RaytracingAccelerationStructure previousTopLevelAS;
 layout(binding = BINDING_ACCELERATION_STRUCTURE_UNORDERED)
 RaytracingAccelerationStructure unorderedTLAS;
 
-layout(binding = BINDING_ACCELERATION_STRUCTURE_SSS)
-RaytracingAccelerationStructure sssTLAS;
-
 layout(binding = BINDING_SURFACE_DATA_BUFFER) 
 StructuredBuffer<Surface> surfaces;
 
 layout(binding = BINDING_SURFACE_MAPPING_BUFFER) 
 StructuredBuffer<int32_t> surfaceMapping;
 
-// Note: Surface Material array indexed by surface index (max SURFACE_INDEX_MAX_VALUE).
-// The SharedSurfaceIndex and SharedMediumMaterialIndex GBuffer textures are R32_UINT.
+// Note: Surface Material array may only be up to a size of 2^16
 layout(binding = BINDING_SURFACE_MATERIAL_DATA_BUFFER)
 StructuredBuffer<MemoryPolymorphicSurfaceMaterial> surfaceMaterials;
 
-// Note: Surface Material Extension array indexed by surface index (max SURFACE_INDEX_MAX_VALUE).
+// Note: Surface Material array may only be up to a size of 2^16
 layout(binding = BINDING_SURFACE_MATERIAL_EXT_DATA_BUFFER)
 StructuredBuffer<MemoryPolymorphicSurfaceMaterial> surfaceMaterialExtensions;
 

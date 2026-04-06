@@ -28,7 +28,6 @@
 #include "../util/rc/util_rc_ptr.h"
 #include "rtx_types.h"
 #include "../util/util_vector.h"
-#include "../util/util_flags.h"
 #include "../util/util_matrix.h"
 #include "rtx_camera_manager.h"
 #include "dxvk_cmdlist.h"
@@ -151,7 +150,6 @@ uint32_t getFirstBillboardIndex() const { return m_firstBillboard; }
   bool isViewModelNonReference() const;
   bool isViewModelReference() const;
   bool isViewModelVirtual() const;
-  bool isSubsurface() const { return m_isSubsurface; }
 
   bool isUnlinkedForGC() const { return m_isUnlinkedForGC; }
 
@@ -182,7 +180,7 @@ private:
   mutable uint32_t m_frameLastUpdated = kInvalidFrameIndex;
   mutable uint32_t m_frameCreated = kInvalidFrameIndex;
 
-  Flags<CameraType::Enum> m_seenCameraTypes;  // Camera types with which the instance has been originally rendered with
+  std::vector<CameraType::Enum> m_seenCameraTypes;  // Camera types with which the instance has been originally rendered with
 
   MaterialDataType m_materialType = MaterialDataType::Invalid;
   uint32_t m_albedoOpacityTextureIndex = kSurfaceMaterialInvalidTextureIndex;
@@ -207,7 +205,6 @@ private:
   bool m_isUnordered = false;
   bool m_isObjectToWorldMirrored = false;
   bool m_isCreatedByRenderer = false;
-  bool m_isSubsurface = false;
   BlasEntry* m_linkedBlas = nullptr;
   XXH64_hash_t m_materialHash = kEmptyHash;
   XXH64_hash_t m_materialDataHash = kEmptyHash;
@@ -338,9 +335,7 @@ private:
 
   std::vector<RtInstance*> m_instances; 
   std::vector<RtInstance*> m_viewModelCandidates;
-  uint32_t m_viewModelCandidatesFrameId = kInvalidFrameIndex;
   std::vector<RtInstance*> m_playerModelInstances;
-  uint32_t m_playerModelInstancesFrameId = kInvalidFrameIndex;
   std::vector<IntersectionBillboard> m_billboards;
 
   bool m_previousViewModelState = false;

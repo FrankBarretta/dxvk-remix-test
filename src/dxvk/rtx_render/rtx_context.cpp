@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2021-2025, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -429,28 +429,6 @@ namespace dxvk {
       __debugbreak();
     }
 
-#ifdef REMIX_DEVELOPMENT
-    // Crash Hotkey Feature: When armed via the Development tab checkbox, pressing the crash hotkey
-    // triggers a deliberate null pointer dereference crash. This is useful for testing crash handling,
-    // crash dumps, and crash reporting systems.
-    {
-      static bool crashHotkeyStartupLogged = false;
-      if (!crashHotkeyStartupLogged && RtxOptions::enableCrashHotkey()) {
-        const auto crashHotkeyStr = buildKeyBindDescriptorString(RtxOptions::crashHotkey());
-        Logger::warn(str::format("Crash hotkey is ARMED at startup (via config/environment) - press ", crashHotkeyStr, " to trigger crash"));
-        crashHotkeyStartupLogged = true;
-      }
-      
-      if (RtxOptions::enableCrashHotkey() && ImGUI::checkHotkeyState(RtxOptions::crashHotkey(), false)) {
-        const auto crashHotkeyStr = buildKeyBindDescriptorString(RtxOptions::crashHotkey());
-        Logger::err(str::format("Deliberate crash triggered via crash hotkey (", crashHotkeyStr, ")"));
-        // Trigger a null pointer dereference to cause a crash
-        volatile int* nullPtr = nullptr;
-        *nullPtr = 0xDEAD;
-      }
-    }
-#endif
-
     commitGraphicsState<true, false>();
 
     auto common = getCommonObjects();
@@ -512,11 +490,7 @@ namespace dxvk {
     ShaderManager::getInstance()->update();
 #endif
 
-    common->getTextureManager().processAllHotReloadRequests();
-
     const float gpuIdleTimeMilliseconds = getGpuIdleTimeSinceLastCall();
-
-    bool raytracedThisFrame = false;
 
     // Note: Only engage ray tracing when it is enabled, the camera is valid and when no shaders are currently being compiled asynchronously (as
     // trying to render before shaders are done compiling will cause Remix to block).
@@ -723,36 +697,25 @@ namespace dxvk {
         }
 
         m_common->metaNeuralRadianceCache().onFrameEnd(rtOutput);
+        getSceneManager().onFrameEnd(this);
 
         rtOutput.onFrameEnd();
-        raytracedThisFrame = true;
       }
 
-      m_framesWithoutValidScene = 0;
+      m_previousInjectRtxHadScene = true;
     } else {
-      // If raytracing is only disabled because we don't have shaders available, we don't want to clear the scene.
-      // This frequently happens for a single frame when a cached shader is being fetched, and causes the Logic 
-      // graph state to be reset - which is problematic since Logic graphs often trigger shader fetches.
-      // It might be safe to remove this clear entirely - it was added before we had any garbage collection
-      // in the scene manager, so it may not be needed anymore.
-      if (!isRaytracingEnabled || !isCameraValid) {
-        m_framesWithoutValidScene++;
-        // Some games may have invalid cameras for a brief period during camera cuts, but clearing the scene
-        // during these cuts causes all textures to need to be reloaded, which is slow.
-        if (m_framesWithoutValidScene > RtxOptions::sceneKeepAliveFrames()) {
-          // Only perform Wait For Idle on the first clear to avoid expensive GPU sync on every frame
-          const bool needWfi = (m_framesWithoutValidScene == RtxOptions::sceneKeepAliveFrames() + 1);
-          getSceneManager().clear(this, needWfi);
-        }
-      } else {
-        m_framesWithoutValidScene = 0;
-      }
+      getSceneManager().clear(this, m_previousInjectRtxHadScene);
+      m_previousInjectRtxHadScene = false;
+
+      getSceneManager().onFrameEndNoRTX();
     }
 
-    getSceneManager().onFrameEnd(this, raytracedThisFrame);
+    // Reset the fog state to get it re-discovered on the next frame
+    getSceneManager().clearFogState();
 
     // apply changes to RtxOptions after the frame has ended
-    RtxOptionManager::applyPendingValues(m_device.ptr(), /* forceOnChange */ false);
+    RtxOptionManager::applyPendingValuesOptionLayers();
+    RtxOptionManager::applyPendingValues(m_device.ptr());
 
     // Update stats
     updateMetrics(gpuIdleTimeMilliseconds);
@@ -1132,7 +1095,6 @@ namespace dxvk {
     constants.sssTransmissionBsdfSampleCount = RtxOptions::SubsurfaceScattering::transmissionBsdfSampleCount();
     constants.sssTransmissionSingleScatteringSampleCount = RtxOptions::SubsurfaceScattering::transmissionSingleScatteringSampleCount();
     constants.enableTransmissionDiffusionProfileCorrection = RtxOptions::SubsurfaceScattering::enableTransmissionDiffusionProfileCorrection();
-    constants.enableHeuristicSingleScatteringTransmission = RtxOptions::SubsurfaceScattering::enableHeuristicSingleScatteringTransmission();
     constants.sssArgs.diffusionProfileDebuggingPixel = u16vec2 {
       static_cast<uint16_t>(RtxOptions::SubsurfaceScattering::diffusionProfileDebugPixelPosition().x),
       static_cast<uint16_t>(RtxOptions::SubsurfaceScattering::diffusionProfileDebugPixelPosition().y) };
@@ -1258,7 +1220,6 @@ namespace dxvk {
     OpaqueMaterialOptions::fillShaderParams(constants.opaqueMaterialArgs);
     TranslucentMaterialOptions::fillShaderParams(constants.translucentMaterialArgs);
     ViewDistanceOptions::fillShaderParams(constants.viewDistanceArgs, RtxOptions::getMeterToWorldUnitScale());
-    constants.alphaBlendSurfacePackMult = RtxOptions::getMeterToWorldUnitScale();
 
     // We are going to use this value to perform some animations on GPU, to mitigate precision related issues loop time
     // at the 24 bit boundary (as we use a 8 bit scalar on top of this time which we want to fit into 32 bits without issues,
@@ -1277,7 +1238,7 @@ namespace dxvk {
     constants.resolveOpaquenessThreshold = RtxOptions::resolveOpaquenessThreshold();
     constants.resolveStochasticAlphaBlendThreshold = m_common->metaComposite().stochasticAlphaBlendOpacityThreshold();
 
-    constants.skyBrightness = RtxOptions::skyBrightness();
+    constants.skyBrightness = RtxOptions::skyBrightness();RtxOptions::skyBrightness();
     constants.isLastCompositeOutputValid = restirGI.isActive() && restirGI.getLastCompositeOutput().matchesWriteFrameIdx(frameIdx - 1);
     constants.isZUp = RtxOptions::zUp();
     constants.enableCullingSecondaryRays = RtxOptions::enableCullingInSecondaryRays();
@@ -1303,13 +1264,6 @@ namespace dxvk {
     constants.wboitEnergyLossCompensation = RtxOptions::wboitEnergyLossCompensation();
     constants.wboitDepthWeightTuning = RtxOptions::wboitDepthWeightTuning();
     constants.wboitEnabled = RtxOptions::wboitEnabled();
-
-    constants.eyeArgs.enableEyes = RtxOptions::Eye::enable();
-    constants.eyeArgs.normalBendingEyeball = RtxOptions::Eye::eyeballSphereOffset();
-    constants.eyeArgs.normalBendingCornea = RtxOptions::Eye::corneaSphereOffset();
-    constants.eyeArgs.whitesAlbedoScale = RtxOptions::Eye::eyeWhitesAlbedoScale();
-    constants.eyeArgs.irisRadius = RtxOptions::Eye::irisRadius();
-    constants.eyeArgs.irisDepth = RtxOptions::Eye::irisDepth();
 
     // Upload the constants to the GPU
     {
@@ -1344,7 +1298,6 @@ namespace dxvk {
     bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE, getResourceManager().getTLAS(Tlas::Opaque).accelStructure);
     bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE_PREVIOUS, getResourceManager().getTLAS(Tlas::Opaque).previousAccelStructure.ptr() ? getResourceManager().getTLAS(Tlas::Opaque).previousAccelStructure : getResourceManager().getTLAS(Tlas::Opaque).accelStructure);
     bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE_UNORDERED, getResourceManager().getTLAS(Tlas::Unordered).accelStructure);
-    bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE_SSS, getResourceManager().getTLAS(Tlas::SSS).accelStructure);
     bindResourceBuffer(BINDING_SURFACE_DATA_BUFFER, DxvkBufferSlice(surfaceBuffer, 0, surfaceBuffer->info().size));
     bindResourceBuffer(BINDING_SURFACE_MAPPING_BUFFER, DxvkBufferSlice(surfaceMappingBuffer, 0, surfaceMappingBuffer.ptr() ? surfaceMappingBuffer->info().size : 0));
     bindResourceBuffer(BINDING_SURFACE_MATERIAL_DATA_BUFFER, DxvkBufferSlice(surfaceMaterialBuffer, 0, surfaceMaterialBuffer->info().size));
@@ -1418,9 +1371,8 @@ namespace dxvk {
       // Fallback to ReSTIRGI
       Logger::warn(str::format("[RTX] Neural Radiance Cache is not supported. Switching indirect illumination mode to ReSTIR GI."));
       // TODO[REMIX-4105] trying to use NRC for a frame when it isn't supported will cause a crash, so this needs to be setImmediately.
-      // Should refactor this to use a separate global for the final state, and indicate user preference with the option.
-      // Use Quality layer to ensure this overrides the Environment layer (where env vars are stored).
-      RtxOptions::integrateIndirectMode.setImmediately(IntegrateIndirectMode::ReSTIRGI, RtxOptionLayer::getQualityLayer());
+      // Should refactor this to use a separate global for the final state, and indicate user preference with the option. 
+      RtxOptions::integrateIndirectMode.setImmediately(IntegrateIndirectMode::ReSTIRGI);
     }
   }
 

@@ -1,6 +1,7 @@
 #include "dxgi_factory.h"
 #include "dxgi_output.h"
 #include "dxgi_swapchain.h"
+#include "dxgi_trace.h"
 
 namespace dxvk {
   
@@ -17,6 +18,7 @@ namespace dxvk {
     m_presentCount(0u),
     m_presenter (pPresenter),
     m_monitor   (nullptr) {
+    DxgiEarlyTrace("DxgiSwapChain ctor begin");
     if (FAILED(m_presenter->GetAdapter(__uuidof(IDXGIAdapter), reinterpret_cast<void**>(&m_adapter))))
       throw DxvkError("DXGI: Failed to get adapter for present device");
     
@@ -26,6 +28,8 @@ namespace dxvk {
     // Apply initial window mode and fullscreen state
     if (!m_descFs.Windowed && FAILED(EnterFullscreenMode(nullptr)))
       throw DxvkError("DXGI: Failed to set initial fullscreen state");
+
+    DxgiEarlyTrace("DxgiSwapChain ctor complete");
   }
   
   
@@ -45,6 +49,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiSwapChain::QueryInterface(REFIID riid, void** ppvObject) {
+    DxgiEarlyTrace("DxgiSwapChain::QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2025-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -50,14 +50,12 @@ std::string formatFloat(float value) {
     return "FLT_MIN";
   }
   
-  // Check if the value is effectively an integer AND within float's precise integer range
-  // Float can only precisely represent integers up to ±2^24 (±16,777,216)
-  constexpr float kMaxPreciseFloatInt = 1<<24;
-  if (std::floor(value) == value && std::abs(value) <= kMaxPreciseFloatInt) {
-    const int32_t intValue = static_cast<int32_t>(value);
+  // Check if the value is effectively an integer
+  if (std::floor(value) == value) {
+    // For integer-like values, format with minimal decimal
+    int intValue = static_cast<int>(value);
     return std::to_string(intValue) + ".0";
   }
-  
   // For non-integer values, use to_string and remove trailing zeros
   std::string result = std::to_string(value);
   // Remove trailing zeros after the decimal point
@@ -210,30 +208,22 @@ void writeEnumValues(std::ofstream& outputFile, const RtComponentPropertySpec& p
 
 // Helper function to write min/max value constraints if they exist
 void writeMinMaxValues(std::ofstream& outputFile, const RtComponentPropertySpec& prop) {
-  // Check if limit metadata is set (they default to false, which is a uint32_t with value 0)
-  const bool hasHardMin = !(std::holds_alternative<uint32_t>(prop.hardMin) && std::get<uint32_t>(prop.hardMin) == 0);
-  const bool hasHardMax = !(std::holds_alternative<uint32_t>(prop.hardMax) && std::get<uint32_t>(prop.hardMax) == 0);
-  const bool hasSoftMin = !(std::holds_alternative<uint32_t>(prop.softMin) && std::get<uint32_t>(prop.softMin) == 0);
-  const bool hasSoftMax = !(std::holds_alternative<uint32_t>(prop.softMax) && std::get<uint32_t>(prop.softMax) == 0);
-  const bool hasUiStep = !(std::holds_alternative<uint32_t>(prop.uiStep) && std::get<uint32_t>(prop.uiStep) == 0);
+  // Check if minValue or maxValue are set (they default to false, which is a uint32_t with value 0)
+  const bool hasMinValue = !(std::holds_alternative<uint32_t>(prop.minValue) && std::get<uint32_t>(prop.minValue) == 0);
+  const bool hasMaxValue = !(std::holds_alternative<uint32_t>(prop.maxValue) && std::get<uint32_t>(prop.maxValue) == 0);
   
-  if (hasHardMin || hasHardMax || hasSoftMin || hasSoftMax || hasUiStep) {
+  if (hasMinValue || hasMaxValue) {
     outputFile << std::endl << "**Value Constraints:**" << std::endl << std::endl;
     
-    if (hasHardMin) {
-      outputFile << "- **Minimum Valid Value:** " << escapeMarkdown(getValueAsString(prop.hardMin, prop)) << std::endl;
+    if (hasMinValue) {
+      outputFile << "- **Minimum Value:** " 
+                 << escapeMarkdown(getValueAsString(prop.minValue, prop)) 
+                 << std::endl;
     }
-    if (hasHardMax) {
-      outputFile << "- **Maximum Valid Value:** " << escapeMarkdown(getValueAsString(prop.hardMax, prop)) << std::endl;
-    }
-    if (hasSoftMin) {
-      outputFile << "- **Suggested Minimum:** " << escapeMarkdown(getValueAsString(prop.softMin, prop)) << std::endl;
-    }
-    if (hasSoftMax) {
-      outputFile << "- **Suggested Maximum:** " << escapeMarkdown(getValueAsString(prop.softMax, prop)) << std::endl;
-    }
-    if (hasUiStep) {
-      outputFile << "- **UI Step:** " << escapeMarkdown(getValueAsString(prop.uiStep, prop)) << std::endl;
+    if (hasMaxValue) {
+      outputFile << "- **Maximum Value:** " 
+                 << escapeMarkdown(getValueAsString(prop.maxValue, prop)) 
+                 << std::endl;
     }
   }
 }
@@ -439,6 +429,8 @@ bool writeMarkdownIndex(const std::vector<const RtComponentSpec*>& specs, const 
   
   // Write the index header
   outputFile << "# RTX Remix Component Documentation" << std::endl << std::endl;
+  outputFile << "**⚠️ Warning**: The Component System is not ready for use yet. "
+             << "The information below is not finalized." << std::endl << std::endl;
   outputFile << "This documentation provides detailed information about all available components "
              << "in the RTX Remix graph system." << std::endl << std::endl;
   outputFile << "## Available Components" << std::endl << std::endl;

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2021-2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -29,10 +29,6 @@
 #define asuint(x) *reinterpret_cast<const uint32_t*>(&x)
 #define WriteBuffer(T) T*
 #define ReadBuffer(T) const T*
-
-// CPU-side half-float to float conversion (GPU uses the f16tof32 intrinsic built-in)
-#include "../utility/f16_conversion.h"
-
 #else
 #define WriteBuffer(T) RWStructuredBuffer<T>
 #define ReadBuffer(T) StructuredBuffer<T>
@@ -46,7 +42,6 @@ namespace interleaver {
 
     // Passthrough format mapping
     VK_FORMAT_B8G8R8A8_UNORM = 44,
-    VK_FORMAT_R16G16_SFLOAT = 83,
     VK_FORMAT_R32G32_SFLOAT = 103,
     VK_FORMAT_R32G32B32_SFLOAT = 106,
     VK_FORMAT_R32G32B32A32_SFLOAT = 109,
@@ -54,7 +49,6 @@ namespace interleaver {
 
   bool formatConversionFloatSupported(uint32_t format) {
     switch (format) {
-    case SupportedVkFormats::VK_FORMAT_R16G16_SFLOAT:
     case SupportedVkFormats::VK_FORMAT_R32G32_SFLOAT:
     case SupportedVkFormats::VK_FORMAT_R32G32B32_SFLOAT:
     case SupportedVkFormats::VK_FORMAT_R32G32B32A32_SFLOAT:
@@ -77,14 +71,6 @@ namespace interleaver {
 
   float3 convert(uint32_t format, ReadBuffer(float) input, uint32_t index) {
     switch (format) {
-    case SupportedVkFormats::VK_FORMAT_R16G16_SFLOAT:
-    {
-      // Two half-floats packed into one 32-bit word: [G(31:16) | R(15:0)] in memory
-      uint data = asuint(input[index]);
-      float r = f16tof32(data & 0xFFFFu);
-      float g = f16tof32((data >> 16u) & 0xFFFFu);
-      return float3(r, g, 0);
-    }
     case SupportedVkFormats::VK_FORMAT_R32G32_SFLOAT:
       return float3(input[index + 0], input[index + 1], 0);
     case SupportedVkFormats::VK_FORMAT_R32G32B32_SFLOAT:
@@ -134,11 +120,6 @@ namespace interleaver {
       dst[idx * cb.outputStride + writeOffset++] = normals.x;
       dst[idx * cb.outputStride + writeOffset++] = normals.y;
       dst[idx * cb.outputStride + writeOffset++] = normals.z;
-    } else if (cb.forceNormals) {
-      // Reserve normal space with zeros; will be filled by smooth normals pass
-      dst[idx * cb.outputStride + writeOffset++] = 0.0f;
-      dst[idx * cb.outputStride + writeOffset++] = 0.0f;
-      dst[idx * cb.outputStride + writeOffset++] = 0.0f;
     }
 
     if (cb.hasTexcoord) {

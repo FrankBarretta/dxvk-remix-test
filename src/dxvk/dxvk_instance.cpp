@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2021-2024, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -36,21 +36,11 @@
 
 #include <cstring>
 #include <algorithm>
-#include <unordered_set>
-#include <deque>
-
-// NV-DXVK start: callstack logging support
-#include <sstream>
-#include <mutex>
-#include <windows.h>
-#include <dbghelp.h>
-// NV-DXVK end
 
 // NV-DXVK start: regex-based filters for VL messages
 #include <array>
 #include <regex>
 
-#include "../util/xxHash/xxhash.h"
 #include "../util/util_env.h"
 #include "../util/util_string.h"
 // NV-DXVK end
@@ -64,57 +54,6 @@
 #include <remix/remix_c.h>
 // NV-DXVK end
 namespace dxvk {
-
-  // NV-DXVK start: debug callback context (stack trace + duplicate filtering)
-  struct DxvkDebugUtilsContext {
-    struct StackTrace {
-      HANDLE process = GetCurrentProcess();
-      std::once_flag symInitFlag;
-      bool symInitOk = false;
-      std::mutex dbghelpMutex;
-
-      void ensureSymbolsAreInitialized() {
-        std::call_once(symInitFlag, [this]() {
-          std::lock_guard<std::mutex> lock(dbghelpMutex);
-
-          bool initializedByUs = false;
-
-          const BOOL initResult = SymInitialize(process, nullptr, FALSE);
-          if (!initResult) {
-            const DWORD error = GetLastError();
-            if (error == ERROR_INVALID_FUNCTION) {
-              // Symbol handler already initialized elsewhere; treat as success.
-              symInitOk = true;
-            } else {
-              Logger::err(str::format("[VK_DEBUG_REPORT] Failed to initialize DbgHelp symbols for stack trace capture. Error: ", error));
-              symInitOk = false;
-            }
-          } else {
-            symInitOk = true;
-            initializedByUs = true;
-          }
-
-          if (symInitOk) {
-            SymSetOptions(SymGetOptions() | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
-            if (initializedByUs) {
-              if (!SymRefreshModuleList(process)) {
-                Logger::warn(str::format("[VK_DEBUG_REPORT] SymRefreshModuleList failed. Error: ", GetLastError()));
-              }
-            }
-          }
-        });
-      }
-    };
-
-    StackTrace stackTrace;
-    std::mutex seenMessagesMutex;
-    std::unordered_set<XXH64_hash_t> seenMessageHashes;
-    std::deque<XXH64_hash_t> seenMessageOrder;
-    static constexpr size_t kMaxSeenMessages = 4096;
-    bool loggedEvictionWarning = false;
-  };
-  // NV-DXVK end
-
   bool filterErrorMessages(const char* message) {
     // validation errors that we are currently ignoring --- to fix!
     constexpr std::array ignoredErrors{
@@ -178,137 +117,25 @@ namespace dxvk {
     return false;
   }
 
-  // NV-DXVK start: capture stack trace for debug messages
-  std::string captureStackTrace(DxvkDebugUtilsContext& ctx) {
-    ctx.stackTrace.ensureSymbolsAreInitialized();
-
-    if (!ctx.stackTrace.symInitOk) {
-      return {};
-    }
-
-    std::array<void*, 64> frames{};
-    const USHORT captured = RtlCaptureStackBackTrace(
-      1, static_cast<ULONG>(frames.size()), frames.data(), nullptr);
-
-    if (captured == 0) {
-      return {};
-    }
-
-    // captureStackTrace() is called from potentially multiple threads concurrently.
-    // Prevent concurrent calls from causing intermittent crashes, corrupted symbol output, or failures like SymFromAddr returning nonsense depending on timing.
-    std::lock_guard<std::mutex> dbghelpLock(ctx.stackTrace.dbghelpMutex);
-
-    std::ostringstream stream;
-
-    for (USHORT i = 0; i < captured; ++i) {
-      const DWORD64 address = reinterpret_cast<DWORD64>(frames[i]);
-
-      char symbolBuffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME] = {};
-      SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBuffer);
-      symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-      symbol->MaxNameLen = MAX_SYM_NAME;
-
-      stream << "  [" << i << "] ";
-
-      if (SymFromAddr(ctx.stackTrace.process, address, nullptr, symbol)) {
-        stream << symbol->Name;
-      } else {
-        stream << "<unknown>";
-      }
-
-      stream << " (0x" << std::hex << address << std::dec << ")";
-
-      IMAGEHLP_LINE64 line;
-      std::memset(&line, 0, sizeof(line));
-      line.SizeOfStruct = sizeof(line);
-      DWORD lineDisplacement = 0;
-      if (SymGetLineFromAddr64(ctx.stackTrace.process, address, &lineDisplacement, &line) && line.FileName != nullptr) {
-        stream << " - " << line.FileName << ":" << line.LineNumber;
-      }
-
-      stream << "\n";
-    }
-
-    return stream.str();
-  }
-
-  bool filterDuplicateMessages(DxvkDebugUtilsContext& ctx, const char* pMsg) {
-    std::lock_guard<std::mutex> lock(ctx.seenMessagesMutex);
-
-    const XXH64_hash_t msgHash = XXH3_64bits(pMsg, std::strlen(pMsg));
-
-    if (ctx.seenMessageHashes.find(msgHash) != ctx.seenMessageHashes.end()) {
-      return true;
-    }
-
-    if (ctx.seenMessageHashes.empty()) {
-      ctx.seenMessageHashes.reserve(ctx.kMaxSeenMessages + 1);  // Allow for one extra insertion before eviction logic kicks in
-    }
-
-    ctx.seenMessageHashes.insert(msgHash);
-    ctx.seenMessageOrder.push_back(msgHash);
-
-    if (ctx.seenMessageOrder.size() > ctx.kMaxSeenMessages) {
-      if (!ctx.loggedEvictionWarning) {
-        Logger::info("[VK_DEBUG_REPORT] Maximum validation layer duplicate message filtering reached. Older messages may appear again.");
-        ctx.loggedEvictionWarning = true;
-      }
-    }
-
-    while (ctx.seenMessageOrder.size() > ctx.kMaxSeenMessages) {
-      const XXH64_hash_t oldest = ctx.seenMessageOrder.front();
-      ctx.seenMessageOrder.pop_front();
-      ctx.seenMessageHashes.erase(oldest);
-    }
-
-    return false;
-  }
-
-  // NV-DXVK end
-
   // NV-DXVK start: use EXT_debug_utils
   VKAPI_ATTR VkBool32 VKAPI_CALL
     debugFunction(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
       VkDebugUtilsMessageTypeFlagsEXT messageTypes,
       const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-      void* pUserData) {
-    DxvkDebugUtilsContext& ctx = *reinterpret_cast<DxvkDebugUtilsContext*>(pUserData);
+      void* pUserData)
+  {
     const auto pMsg = pCallbackData->pMessage;
-    std::string msgStr = str::format("[VK_DEBUG_REPORT] Code ", pCallbackData->messageIdNumber, ": ", pMsg);
-
-    const bool shouldFilterErrors = true; 
-    const bool showFilteredErrorsAsWarnings = false; // Set it to true to ouput the waived errors as warnings rather than skipping them entirely
-    const bool shouldFilterDuplicateMessages = true;
-
-    bool isWaivedError = 
-      shouldFilterErrors && 
-      (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
-      filterErrorMessages(pMsg);
-
-    // Only filter duplicate messages that end up being shown since duplicate filtering is constrained in size for performance
-    if (!isWaivedError || showFilteredErrorsAsWarnings) {    
-      if (shouldFilterDuplicateMessages && filterDuplicateMessages(ctx, pMsg)) {
-        return VK_FALSE;
-      }
-    }
+    const auto msgStr = str::format("[VK_DEBUG_REPORT] Code ", pCallbackData->messageIdNumber, ": ", pMsg);
 
     if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-      if (!isWaivedError) {
-        if (RtxOptions::logCallstacksOnValidationLayerErrors()) {
-          const std::string stackTrace = captureStackTrace(ctx);
-          if (!stackTrace.empty()) {
-            msgStr = str::format(msgStr, "\n[VK_DEBUG_REPORT] Callstack:\n", stackTrace, "\n");
-          }
-        }
-        
+      if (!filterErrorMessages(pMsg)) {
         OutputDebugString(msgStr.c_str());
         OutputDebugString("\n\n");       // <-- make easier to see
 
         Logger::err(msgStr);
       } else {
-        if (showFilteredErrorsAsWarnings) {
-          Logger::warn(str::format("(waived error) ", msgStr));
-        }
+        // Uncomment to see the waived errors
+        // Logger::warn(str::format("(waived error) ", msgStr));
       }
     } else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
       if (messageTypes & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) {
@@ -392,14 +219,13 @@ namespace dxvk {
     RtxSystemInfo::logReport();
     // NV-DXVK end 
 
-    // NV-DXVK start: Initialize RtxOptions (loads all config files and creates option layers)
+    // NV-DXVK start: Decomposed growing config initialization
     // TODO[REMIX-4106] we need to avoid re-parsing the same config files when dxvk_instance is recreated.
-    RtxOptions::Create();
-    
-    // Get the merged config for DxvkOptions and other queries
-    m_config = RtxOptions::getMergedConfig();
+    initConfigs();
+    // NV-DXVK end 
+
     m_options = DxvkOptions(m_config);
-    // NV-DXVK end
+    RtxOptions::Create(m_config);
 
     // NV-DXVK start: Wait for debugger functionality
     if (m_config.getOption<bool>("dxvk.waitForDebuggerToAttach", false, "DXVK_WAIT_FOR_DEBUGGER_TO_ATTACH"))
@@ -504,14 +330,6 @@ namespace dxvk {
         VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
         VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
       info.pfnUserCallback = debugFunction;
-      info.pUserData = nullptr;
-
-      if (!m_debugUtilsContext) {
-        m_debugUtilsContext = std::make_unique<DxvkDebugUtilsContext>();
-        Logger::info("[VK_DEBUG_REPORT] Enabling validation layer duplicate message filtering.");
-      }
-
-      info.pUserData = m_debugUtilsContext.get();
 
       m_vki->vkCreateDebugUtilsMessengerEXT(m_vki->instance(), &info, nullptr, &m_debugUtilsMessenger);
       // NV-DXVK end
@@ -805,5 +623,111 @@ namespace dxvk {
     for (uint32_t i = 0; i < names.count(); i++)
       Logger::info(str::format("  ", names.name(i)));
   }
+  
+  // NV-DXVK start: Custom config loading/logging
+  void DxvkInstance::initConfigs() {
+    
+    // Load configurations
+    // Note: Loading is done in the following order currently, each step overriding values in the previous
+    // configuration values when a conflict exist, resulting in the combined "effective" configuration:
+    // - Configuration defaults in code (Implicit)
+    // - dxvk.conf ("User Config"), can be multiple when set with envvar
+    // - Per-application configuration in code ("Built-in Config" from config.cpp)
+    // - rtx.conf ("RTX User Config"), can be multiple when set with envvar
+    //   - baseGameModPath/rtx.conf (Mod-specific extension of "RTX User Config")
+    m_config = Config();
+    initConfig<Config::Type_User>();
+    initConfig<Config::Type_App>();
+    initConfig<Config::Type_RtxUser>();
+    initConfig<Config::Type_RtxMod>();
+
+    auto userLayer = RtxOptionImpl::addRtxOptionLayer("user.conf", (uint32_t) RtxOptionLayer::SystemLayerPriority::USER, true, 1.0f, 0.1f);
+    Logger::info("Set user realtime configs.");
+    if (userLayer) {
+      userLayer->getConfig().logOptions("user.conf");
+    }
+
+    RtxOptionManager::initializeRtxOptions();
+    for (const auto& [unusedLayerKey, optionLayerPtr] : RtxOptionImpl::getRtxOptionLayerMap()) {
+      RtxOptionManager::addRtxOptionLayer(*optionLayerPtr);
+    }
+
+    m_config.logOptions("Effective configuration for DXVK");
+
+    // Output environment variable info
+    // Todo: This being here is kinda not great as this results in the Environment variables being parsed 3 times
+    // which is quite redundant. Unfortunately this logging can't go in Config::getOption as this function is called
+    // twice (again, redundant) resulting in duplicate messages. Ideally this system should be refactored to get all the
+    // relevant environment variable values for the desired RtxOptions in a loop like this, and then use those when
+    // setting the options up to avoid redundantly making a ton of syscalls. Luckily this code only happens in loading
+    // so it is not a huge performance overhead, and the value of seeing which environment variables are overriding options
+    // is currently more valuable (since they continue to cause problems when unseen in the log).
+
+    bool firstEnvironmentOverride = true;
+
+    for (auto&& option : RtxOptionImpl::getGlobalRtxOptionMap()) {
+      const auto optionName = option.second->getFullName();
+      const auto envVarName = option.second->environment;
+
+      if (envVarName) {
+        const std::string& envVarValue = env::getEnvVar(envVarName);
+
+        if (envVarValue != "") {
+          // Note: Only print out the section header if there's at least one environment variable override.
+          if (firstEnvironmentOverride) {
+            Logger::info("Environment variable option overrides:");
+
+            firstEnvironmentOverride = false;
+          }
+
+          Logger::info(str::format("  ", optionName, " overridden by environment variable: ", envVarName, "=", envVarValue));
+        }
+      }
+    }
+  }
+  
+  template<Config::Type type>
+  void DxvkInstance::initConfig() {
+    const auto name = Config::getDesc(type).name;
+    Logger::info(str::format("Init config: ", name));
+    std::string configPath = "";
+    if constexpr (type == Config::Type_RtxMod) {
+      // Handle games that have native mod support, where the base game looks into another folder for mod, 
+      // and the new asset path is passed in through the command line
+      const auto baseGameModPath = ModManager::getBaseGameModPath(
+        m_config.getOption<std::string>("rtx.baseGameModRegex", "", ""),
+        m_config.getOption<std::string>("rtx.baseGameModPathRegex", "", ""));
+
+      if (baseGameModPath.empty()) {
+        // Skip RtxMod if not present, as it may just pick up a different rtx.mod path
+        Logger::info("No base game mod path found. Skipping initialization.");
+        return;
+      } else {
+        Logger::info(str::format("Found base game mod path: ", baseGameModPath));
+        configPath = baseGameModPath;
+      }
+    }
+    m_confs[type] = Config::getConfig<type>(configPath);
+    m_confs[type].logOptions(name.c_str());
+    m_config.merge(m_confs[type]);
+
+    if constexpr (type == Config::Type_User) {
+      RtxOptionImpl::addRtxOptionLayer("dxvk.conf", (uint32_t) RtxOptionLayer::SystemLayerPriority::DxvkConf, true, 1.0f, 0.1f, &m_confs[type]);
+      Logger::info("Set user specific config.");
+    } else if constexpr (type == Config::Type_App) {
+      // Set config so that any rtx option initialized later will use the value in that config object
+      // The start-up config contains the values from the code and dxvk.conf, only.
+      RtxOptionManager::setStartupConfig(m_config);
+      RtxOptionImpl::addRtxOptionLayer("<APPLICATION DEFAULT>", (uint32_t) RtxOptionLayer::SystemLayerPriority::Default, true, 1.0f, 0.1f, &m_confs[type]);
+      Logger::info("Set startup config.");
+    } else if constexpr ((type == Config::Type_RtxUser) || (type == Config::Type_RtxMod)) {
+      // Set custom config after the RTX user config has been merged into the config and
+      // update the RTX options. Contains values from rtx.conf
+      RtxOptionManager::setCustomConfig(m_config);
+      RtxOptionImpl::addRtxOptionLayer("rtx.conf", (uint32_t) RtxOptionLayer::SystemLayerPriority::RtxConf, true, 1.0f, 0.1f, nullptr);
+      Logger::info("Set custom config.");
+    }
+  }
+  // NV-DXVK end 
   
 }

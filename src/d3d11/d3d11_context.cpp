@@ -1084,6 +1084,13 @@ namespace dxvk {
 
     if (buffer == nullptr)
       return;
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
+      D3D11Rtx::DrawContext remixDrawContext;
+      remixDrawContext.indexed = false;
+      remixDrawContext.indirect = true;
+      m_parent->RTX().NotifyDraw(remixDrawContext);
+    }
     
     DxvkBufferSlice vtxBuf = buffer->GetBufferSlice();
     DxvkBufferSlice ctrBuf = buffer->GetSOCounter();
@@ -1104,11 +1111,29 @@ namespace dxvk {
           UINT            StartVertexLocation) {
     D3D10DeviceLock lock = LockContext();
 
+    D3D11Rtx::DrawContext remixDrawContext;
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
+      remixDrawContext.indexed = false;
+      remixDrawContext.indirect = false;
+      remixDrawContext.vertexCount = VertexCount;
+      remixDrawContext.indexCount = 0u;
+      remixDrawContext.instanceCount = 1u;
+      remixDrawContext.firstVertex = StartVertexLocation;
+      remixDrawContext.firstIndex = 0u;
+      remixDrawContext.vertexOffset = 0;
+      remixDrawContext.firstInstance = 0u;
+      m_parent->RTX().NotifyDraw(remixDrawContext);
+    }
+
     EmitCs([=] (DxvkContext* ctx) {
       ctx->draw(
         VertexCount, 1,
         StartVertexLocation, 0);
     });
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
+      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
@@ -1117,6 +1142,21 @@ namespace dxvk {
           UINT            StartIndexLocation,
           INT             BaseVertexLocation) {
     D3D10DeviceLock lock = LockContext();
+
+    D3D11Rtx::DrawContext remixDrawContext;
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
+      remixDrawContext.indexed = true;
+      remixDrawContext.indirect = false;
+      remixDrawContext.vertexCount = 0u;
+      remixDrawContext.indexCount = IndexCount;
+      remixDrawContext.instanceCount = 1u;
+      remixDrawContext.firstVertex = 0u;
+      remixDrawContext.firstIndex = StartIndexLocation;
+      remixDrawContext.vertexOffset = BaseVertexLocation;
+      remixDrawContext.firstInstance = 0u;
+      m_parent->RTX().NotifyDraw(remixDrawContext);
+    }
     
     EmitCs([=] (DxvkContext* ctx) {
       ctx->drawIndexed(
@@ -1124,6 +1164,9 @@ namespace dxvk {
         StartIndexLocation,
         BaseVertexLocation, 0);
     });
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
+      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
@@ -1133,6 +1176,21 @@ namespace dxvk {
           UINT            StartVertexLocation,
           UINT            StartInstanceLocation) {
     D3D10DeviceLock lock = LockContext();
+
+    D3D11Rtx::DrawContext remixDrawContext;
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
+      remixDrawContext.indexed = false;
+      remixDrawContext.indirect = false;
+      remixDrawContext.vertexCount = VertexCountPerInstance;
+      remixDrawContext.indexCount = 0u;
+      remixDrawContext.instanceCount = InstanceCount;
+      remixDrawContext.firstVertex = StartVertexLocation;
+      remixDrawContext.firstIndex = 0u;
+      remixDrawContext.vertexOffset = 0;
+      remixDrawContext.firstInstance = StartInstanceLocation;
+      m_parent->RTX().NotifyDraw(remixDrawContext);
+    }
     
     EmitCs([=] (DxvkContext* ctx) {
       ctx->draw(
@@ -1141,6 +1199,9 @@ namespace dxvk {
         StartVertexLocation,
         StartInstanceLocation);
     });
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
+      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
@@ -1151,6 +1212,21 @@ namespace dxvk {
           INT             BaseVertexLocation,
           UINT            StartInstanceLocation) {
     D3D10DeviceLock lock = LockContext();
+
+    D3D11Rtx::DrawContext remixDrawContext;
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
+      remixDrawContext.indexed = true;
+      remixDrawContext.indirect = false;
+      remixDrawContext.vertexCount = 0u;
+      remixDrawContext.indexCount = IndexCountPerInstance;
+      remixDrawContext.instanceCount = InstanceCount;
+      remixDrawContext.firstVertex = 0u;
+      remixDrawContext.firstIndex = StartIndexLocation;
+      remixDrawContext.vertexOffset = BaseVertexLocation;
+      remixDrawContext.firstInstance = StartInstanceLocation;
+      m_parent->RTX().NotifyDraw(remixDrawContext);
+    }
     
     EmitCs([=] (DxvkContext* ctx) {
       ctx->drawIndexed(
@@ -1160,6 +1236,9 @@ namespace dxvk {
         BaseVertexLocation,
         StartInstanceLocation);
     });
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
+      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
@@ -1168,6 +1247,13 @@ namespace dxvk {
           UINT            AlignedByteOffsetForArgs) {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
+      D3D11Rtx::DrawContext remixDrawContext;
+      remixDrawContext.indexed = true;
+      remixDrawContext.indirect = true;
+      m_parent->RTX().NotifyDraw(remixDrawContext);
+    }
 
     if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDrawIndexedIndirectCommand)))
       return;
@@ -1202,6 +1288,13 @@ namespace dxvk {
           UINT            AlignedByteOffsetForArgs) {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
+      D3D11Rtx::DrawContext remixDrawContext;
+      remixDrawContext.indexed = false;
+      remixDrawContext.indirect = true;
+      m_parent->RTX().NotifyDraw(remixDrawContext);
+    }
 
     if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDrawIndirectCommand)))
       return;

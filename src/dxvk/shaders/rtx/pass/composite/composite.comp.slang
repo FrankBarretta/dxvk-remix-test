@@ -357,18 +357,7 @@ void main(uint2 thread_id : SV_DispatchThreadID, uint2 localIndex : SV_GroupThre
 
   vec3 volumetricPreintegratedRadiance = vec3(0.0f, 0.0f, 0.0f);
   vec3 volumeAttenuation = vec3(1.0f, 1.0f, 1.0f);
-
-  // Note: This is only evaluated when volumetrics are enabled, no external check is needed.
-  // Todo: Using Primary linear view Z for now, not the best option as this does not work with PSR (among other effects like
-  // Portals and particles), but fine for initial testing.
-  {
-    vec2 volumeUV = cameraPixelCoordinateToScreenUV(fakeCamera, thread_id);
-    volumeUV.x /= volumeArgs.numFroxelVolumes;
-    integrateVolumetricNEE(
-      randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
-      volumeArgs, cb.timeSinceStartMS, thread_id, volumeUV, primaryMiss, cameraGetWorldPosition(fakeCamera), viewDistance, primaryRayDirections.worldDirection,
-      volumetricPreintegratedRadiance, volumeAttenuation);
-  }
+  float volumetricIntegrationOffset = 0.f;
   
   // Apply D3D9-style fog when volumetric lighting is disabled
 
@@ -377,7 +366,7 @@ void main(uint2 thread_id : SV_DispatchThreadID, uint2 localIndex : SV_GroupThre
   bool isAlphaBlend = false;
   if (cb.enableStochasticAlphaBlend)
   {    
-    AlphaBlendSurface surface = AlphaBlendSurface.createFromPacked(AlphaBlendGBuffer[thread_id], cb.alphaBlendSurfacePackMult);
+    AlphaBlendSurface surface = AlphaBlendSurface.createFromPacked(AlphaBlendGBuffer[thread_id]);
     vec3 cameraPosition = cameraGetWorldPosition(fakeCamera);
     vec4 centerLight = AlphaBlendRadiance[thread_id];
     bool discardPixel = cb.stochasticAlphaBlendDiscardBlackPixel && all(centerLight.xyz == 0);
@@ -405,7 +394,7 @@ void main(uint2 thread_id : SV_DispatchThreadID, uint2 localIndex : SV_GroupThre
           }
           int2 neighborPixel = clamp(thread_id.xy + offset * 2,0,cb.resolution-1);
 
-          AlphaBlendSurface neighborSurface = AlphaBlendSurface.createFromPacked(AlphaBlendGBuffer[neighborPixel], cb.alphaBlendSurfacePackMult);
+          AlphaBlendSurface neighborSurface = AlphaBlendSurface.createFromPacked(AlphaBlendGBuffer[neighborPixel]);
           if (neighborSurface.isValid())
           {
             const CameraDirections neighborRayDirections = cameraPixelCoordinateToDirection(fakeCamera, neighborPixel.xy);
@@ -438,18 +427,17 @@ void main(uint2 thread_id : SV_DispatchThreadID, uint2 localIndex : SV_GroupThre
       {
         float alphaBlendSurfaceLinearViewZ = surface.hitT * primaryRayDirections.viewDirection.z;
         
+        volumetricIntegrationOffset = surface.hitT;
+
         vec2 volumeUV = cameraPixelCoordinateToScreenUV(fakeCamera, thread_id);
         volumeUV.x /= volumeArgs.numFroxelVolumes;
-        
-        vec3 alphaVolumetricPreintegratedRadiance = vec3(0.0f, 0.0f, 0.0f);
-        vec3 alphaVolumetricAttenuation = vec3(1.0f, 1.0f, 1.0f);
         integrateVolumetricNEE(
           randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
           volumeArgs, cb.timeSinceStartMS, thread_id, volumeUV, false, cameraGetWorldPosition(fakeCamera), surface.hitT, primaryRayDirections.worldDirection,
-          alphaVolumetricPreintegratedRadiance, alphaVolumetricAttenuation);
+          volumetricPreintegratedRadiance, volumeAttenuation);
 
-        alphaBlendOutput.xyz *= alphaVolumetricAttenuation * (1 - backgroundAlpha);
-        alphaBlendOutput.xyz += alphaVolumetricPreintegratedRadiance * (1 - backgroundAlpha);
+        alphaBlendOutput.xyz *= volumeAttenuation * (1 - backgroundAlpha);
+        alphaBlendOutput.xyz += volumetricPreintegratedRadiance * (1 - backgroundAlpha);
       }
       else
       {
@@ -467,6 +455,22 @@ void main(uint2 thread_id : SV_DispatchThreadID, uint2 localIndex : SV_GroupThre
     updateAlphaBlendDebugView(thread_id.xy, surface);
   }
 
+  // Note: This is only evaluated when volumetrics are enabled, no external check is needed.
+  // Todo: Using Primary linear view Z for now, not the best option as this does not work with PSR (among other effects like
+  // Portals and particles), but fine for initial testing.
+  
+  // Note here we apply an offset to the volume integration, this is so we can reuse the attenuation and radiance from earlier parts of the shader.
+  {
+    const float3 volumeIntegrationOrigin = cameraGetWorldPosition(fakeCamera) + primaryRayDirections.worldDirection * volumetricIntegrationOffset;
+    const float volumeOpaqueIntegrationLength = max(0, viewDistance - volumetricIntegrationOffset);
+
+    vec2 volumeUV = cameraPixelCoordinateToScreenUV(fakeCamera, thread_id);
+    volumeUV.x /= volumeArgs.numFroxelVolumes;
+    integrateVolumetricNEE(
+      randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
+      volumeArgs, cb.timeSinceStartMS, thread_id, volumeUV, primaryMiss, volumeIntegrationOrigin, volumeOpaqueIntegrationLength, primaryRayDirections.worldDirection,
+      volumetricPreintegratedRadiance, volumeAttenuation);
+  }
 
   // Calculate final combined radiance output
   // Note: The primary hit accumulated radiance value is not affected by the throughput (rather takes attenuation into account

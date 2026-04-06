@@ -362,25 +362,7 @@ namespace dxvk {
     // Assume we won't need this, and update the value if required
     output.previousPositionBuffer = RaytraceBuffer();
 
-    // When the SmoothNormals category is set and the input has no normals, force the interleaved
-    // vertex layout to include space for normals. The smooth normals compute pass will fill them in later.
-    const bool needsSmoothNormals = drawCallState.categories.test(InstanceCategories::SmoothNormals);
-    const bool forceNormals = needsSmoothNormals && !input.normalBuffer.defined();
-
-    // When smooth normals state changes (added or removed), promote to kUpdateBVH so the vertex
-    // data is re-interleaved and the smooth normals dispatch runs (or original normals are restored).
-    if (needsSmoothNormals != output.smoothNormalsApplied && result == ObjectCacheState::kUpdateInstance) {
-      result = ObjectCacheState::kUpdateBVH;
-    }
-    if (!needsSmoothNormals) {
-      output.smoothNormalsApplied = false;
-    }
-
-    // If forceNormals is true, we can't use the fast "already interleaved" path since
-    // we need to change the layout to include normal space.
-    const size_t vertexStride = (input.isVertexDataInterleaved() && input.areFormatsGpuFriendly() && !forceNormals)
-      ? input.positionBuffer.stride()
-      : RtxGeometryUtils::computeOptimalVertexStride(input, forceNormals);
+    const size_t vertexStride = (input.isVertexDataInterleaved() && input.areFormatsGpuFriendly()) ? input.positionBuffer.stride() : RtxGeometryUtils::computeOptimalVertexStride(input);
 
     switch (result) {
       case ObjectCacheState::KBuildBVH: {
@@ -398,7 +380,7 @@ namespace dxvk {
         assert(output.indexCacheBuffer == nullptr && output.historyBuffer[0] == nullptr);
 
         // Create a index buffer and vertex buffer we can use for raytracing.
-        DxvkBufferCreateInfo info;
+        DxvkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
         info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
         info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -416,7 +398,7 @@ namespace dxvk {
         info.size = align(vertexBufferSize, CACHE_LINE_SIZE);
         output.historyBuffer[0] = m_device->createBuffer(info, memoryProperty, DxvkMemoryStats::Category::RTXAccelerationStructure, "Geometry Buffer");
 
-        RtxGeometryUtils::cacheVertexDataOnGPU(ctx, input, output, forceNormals);
+        RtxGeometryUtils::cacheVertexDataOnGPU(ctx, input, output);
 
         break;
       }
@@ -444,7 +426,7 @@ namespace dxvk {
           output.historyBuffer[0] = m_device->createBuffer(output.historyBuffer[1]->info(), memoryProperty, DxvkMemoryStats::Category::RTXAccelerationStructure, "Geometry Buffer");
         } 
 
-        RtxGeometryUtils::cacheVertexDataOnGPU(ctx, input, output, forceNormals);
+        RtxGeometryUtils::cacheVertexDataOnGPU(ctx, input, output);
 
         // Sometimes, we need to invalidate history, do that here by copying the current buffer to the previous..
         if (invalidateHistory) {
@@ -482,7 +464,7 @@ namespace dxvk {
   }
 
 
-  void SceneManager::onFrameEnd(Rc<DxvkContext> ctx, bool raytracedThisFrame) {
+  void SceneManager::onFrameEnd(Rc<DxvkContext> ctx) {
     ScopedCpuProfileZone();
 
     manageTextureVram();
@@ -494,11 +476,10 @@ namespace dxvk {
 
     m_cameraManager.onFrameEnd();
     m_instanceManager.onFrameEnd();
-    m_previousFrameSceneAvailable = raytracedThisFrame && RtxOptions::enablePreviousTLAS();
+    m_previousFrameSceneAvailable = RtxOptions::enablePreviousTLAS();
 
     m_bufferCache.clear();
-    m_externalGpuInstancingTransforms.clear();
-    if (raytracedThisFrame){
+    {
       std::lock_guard lock { m_drawCallMeta.mutex };
       const uint8_t curTick = m_drawCallMeta.ticker;
       const uint8_t nextTick = (m_drawCallMeta.ticker + 1) % m_drawCallMeta.MaxTicks;
@@ -517,7 +498,7 @@ namespace dxvk {
     }
     
     m_activePOMCount = 0;
-    m_startInMediumMaterialIndex = SURFACE_INDEX_INVALID;
+    m_startInMediumMaterialIndex = BINDING_INDEX_INVALID;
     m_startInMediumMaterialIndex_inCache = UINT32_MAX;
 
     if (m_uniqueObjectSearchDistance != RtxOptions::uniqueObjectDistance()) {
@@ -533,20 +514,19 @@ namespace dxvk {
 
     // execute graph updates after all garbage collection is complete (to avoid updating graphs that will just be deleted)
     // RtxOptions will still be pending, so any changes to them will apply next frame.
-    if (raytracedThisFrame){
-      m_graphManager.update(ctx);
-    }
+    m_graphManager.update(ctx);
 
     // Clear replacement material hashes before the next frame.  These are used by components, so must clear after graphManager updates.
     clearFrameReplacementMaterialHashes();
     
     // Clear mesh hashes before the next frame.  These are used by components, so must clear after graphManager updates.
     clearFrameMeshHashes();
-    
-    // Reset the fog state to get it re-discovered on the next frame
-    ImGUI::SetFogStates(m_fogStates, m_fog.getHash());
-    m_fog = FogState();
-    m_fogStates.clear();
+  }
+
+  void SceneManager::onFrameEndNoRTX() {
+    m_cameraManager.onFrameEnd();
+    m_instanceManager.onFrameEnd();
+    manageTextureVram();
   }
 
   std::unordered_set<XXH64_hash_t> uniqueHashes;
@@ -648,7 +628,7 @@ namespace dxvk {
     // TODO: Once the vertex hash only uses vertices referenced by the index buffer, this should be removed.
     const bool highlightUnsafeAnchor = RtxOptions::useHighlightUnsafeAnchorMode() && input.getGeometryData().indexBuffer.defined() && input.getGeometryData().vertexCount > input.getGeometryData().indexCount;
     if (highlightUnsafeAnchor) {
-      const static MaterialData sHighlightMaterialData(OpaqueMaterialData(TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(),
+      const static MaterialData sHighlightMaterialData(OpaqueMaterialData(TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(),
                                                                           0.f, 1.f, Vector3(0.2f, 0.2f, 0.2f), 1.0f, 0.1f, 0.1f, Vector3(0.46f, 0.26f, 0.31f), true, 1, 1, 0, false, false, 200.f, true, false, BlendType::kAlpha, false, AlphaTestType::kAlways, 0, 0.0f, 0.0f, Vector3(), 0.0f, Vector3(), 0.0f, false, Vector3(), 0.0f, 0.0f,
                                                                           lss::Mdl::Filter::Nearest, lss::Mdl::WrapMode::Repeat, lss::Mdl::WrapMode::Repeat));
       return sHighlightMaterialData;
@@ -745,8 +725,7 @@ namespace dxvk {
       if (replacement.includeOriginal) {
         DrawCallState newDrawCallState(*input);
         newDrawCallState.categories = replacement.categories.applyCategoryFlags(newDrawCallState.categories);
-        const RtxParticleSystemDesc* pParticleSystemDesc = replacement.particleSystem.has_value() ? &replacement.particleSystem.value() : nullptr;
-        instance = processDrawCallState(ctx, newDrawCallState, renderMaterialData, nullptr, pParticleSystemDesc);
+        instance = processDrawCallState(ctx, newDrawCallState, renderMaterialData);
       } else if (replacement.type == AssetReplacement::eMesh) {
         DrawCallTransforms transforms = input->getTransformData();
         
@@ -773,7 +752,7 @@ namespace dxvk {
           renderMaterialData = *replacement.materialData;
         }
         if (highlightUnsafeReplacement) {
-          const static MaterialData sHighlightMaterialData(OpaqueMaterialData(TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(),
+          const static MaterialData sHighlightMaterialData(OpaqueMaterialData(TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(), TextureRef(),
               0.f, 1.f, Vector3(0.2f, 0.2f, 0.2f), 1.f, 0.1f, 0.1f, Vector3(1.f, 0.f, 0.f), true, 1, 1, 0, false, false, 200.f, true, false, BlendType::kAlpha, false, AlphaTestType::kAlways, 0, 0.0f, 0.0f, Vector3(), 0.0f, Vector3(), 0.0f, false, Vector3(), 0.0f, 0.0f,
               lss::Mdl::Filter::Nearest, lss::Mdl::WrapMode::Repeat, lss::Mdl::WrapMode::Repeat));
           if ((GlobalTime::get().absoluteTimeMs()) / 200 % 2 == 0) {
@@ -854,6 +833,12 @@ namespace dxvk {
         }
       }
     }
+  }
+
+  void SceneManager::clearFogState() {
+    ImGUI::SetFogStates(m_fogStates, m_fog.getHash());
+    m_fog = FogState();
+    m_fogStates.clear();
   }
 
   void SceneManager::updateBufferCache(RaytraceGeometry& newGeoData) {
@@ -1012,19 +997,6 @@ namespace dxvk {
     // Update the input state, so we always have a reference to the original draw call state
     pBlas->frameLastTouched = m_device->getCurrentFrameId();
 
-    // Generate smooth normals for geometry that is flagged via the SmoothNormals texture category.
-    // This is useful for older D3D9 games where geometry may lack smooth normals, especially
-    // when using the VertexShader Capture mechanism. The smooth normals are computed on the GPU
-    // from the triangle mesh (area-weighted) and written into the normal buffer.
-    // Only dispatch on BVH build/update — for static geometry, positions don't change so
-    // the normals computed on the first pass remain valid for subsequent frames.
-    if (drawCallState.categories.test(InstanceCategories::SmoothNormals) &&
-        (result == ObjectCacheState::KBuildBVH || result == ObjectCacheState::kUpdateBVH)) {
-      m_device->getCommon()->metaGeometryUtils().dispatchSmoothNormals(ctx, drawCallState.getGeometryData(), pBlas->modifiedGeometryData);
-      pBlas->modifiedGeometryData.smoothNormalsApplied = true;
-      pBlas->frameLastUpdated = pBlas->frameLastTouched;
-    }
-
     if (drawCallState.getSkinningState().numBones > 0 &&
         drawCallState.getGeometryData().numBonesPerVertex > 0 &&
         (result == ObjectCacheState::KBuildBVH || result == ObjectCacheState::kUpdateBVH)) {
@@ -1069,13 +1041,11 @@ namespace dxvk {
     // Priority ordering for particle system descriptors is: Mesh, Material, Texture.  This matches the implementation in toolkit.
     // By this point, pParticleSystemDesc will contain the information from a mesh replacement (if one exists), so we just handle
     // materials replacements, and texture taggin categories below.
-    RtxParticleSystemDesc globalParticleDesc; // Storage for global desc if needed
     if (!pParticleSystemDesc) {
       pParticleSystemDesc = renderMaterialData.getParticleSystemDesc();
     }
     if (!pParticleSystemDesc && drawCallState.categories.test(InstanceCategories::ParticleEmitter)) {
-      globalParticleDesc = RtxParticleSystemManager::createGlobalParticleSystemDesc();
-      pParticleSystemDesc = &globalParticleDesc;
+      pParticleSystemDesc = &RtxParticleSystemManager::createGlobalParticleSystemDesc();
     }
     if (instance && pParticleSystemDesc) {
       RtxParticleSystemManager& particleSystem = device()->getCommon()->metaParticleSystem();
@@ -1112,16 +1082,6 @@ namespace dxvk {
                              samplerInfo.addressModeU, samplerInfo.addressModeV, samplerInfo.addressModeW,
                              samplerInfo.borderColor);
     }
-    if (drawCallState.isEye()) {
-      // force eye whites and iris to not repeat
-      sampler = patchSampler(
-        VK_FILTER_LINEAR,
-        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        {}
-      );
-    }
     uint32_t samplerIndex = trackSampler(sampler);
     uint32_t samplerIndex2 = UINT32_MAX;
     if (renderMaterialDataType == MaterialDataType::RayPortal) {
@@ -1146,14 +1106,13 @@ namespace dxvk {
 
     if (renderMaterialDataType == MaterialDataType::Opaque || drawCallState.isUsingRaytracedRenderTarget) {
       uint32_t albedoOpacityTextureIndex = kSurfaceMaterialInvalidTextureIndex;
-      uint32_t secondaryTextureIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t normalTextureIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t tangentTextureIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t heightTextureIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t roughnessTextureIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t metallicTextureIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t emissiveColorTextureIndex = kSurfaceMaterialInvalidTextureIndex;
-      uint32_t subsurfaceMaterialIndex = SURFACE_INDEX_INVALID;
+      uint32_t subsurfaceMaterialIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t subsurfaceTransmittanceTextureIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t subsurfaceThicknessTextureIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t subsurfaceSingleScatteringAlbedoTextureIndex = kSurfaceMaterialInvalidTextureIndex;
@@ -1193,13 +1152,12 @@ namespace dxvk {
         roughnessConstant = 1.f;
       } else {
         if (opaqueMaterialData.getAlbedoOpacityTexture().getManagedTexture() != nullptr) {
-          samplerFeedbackStamp = opaqueMaterialData.getAlbedoOpacityTexture().getManagedTexture()->m_samplerFeedbackStamp;
+          samplerFeedbackStamp = opaqueMaterialData.getAlbedoOpacityTexture().getManagedTexture()->samplerFeedbackStamp;
         }
 
         trackTexture(opaqueMaterialData.getAlbedoOpacityTexture(), albedoOpacityTextureIndex, hasTexcoords, true, samplerFeedbackStamp);
         trackTexture(opaqueMaterialData.getRoughnessTexture(), roughnessTextureIndex, hasTexcoords, true, samplerFeedbackStamp);
         trackTexture(opaqueMaterialData.getMetallicTexture(), metallicTextureIndex, hasTexcoords, true, samplerFeedbackStamp);
-        trackTexture(opaqueMaterialData.getSecondaryTexture(), secondaryTextureIndex, hasTexcoords, true, samplerFeedbackStamp);
 
         albedoOpacityConstant.xyz() = opaqueMaterialData.getAlbedoConstant();
         albedoOpacityConstant.w = opaqueMaterialData.getOpacityConstant();
@@ -1294,7 +1252,6 @@ namespace dxvk {
         thinFilmThicknessConstant, samplerIndex, displaceIn, displaceOut, 
         subsurfaceMaterialIndex, isUsingRaytracedRenderTarget,
         samplerFeedbackStamp,
-        secondaryTextureIndex
       };
 
       if (opaqueSurfaceMaterial.hasValidDisplacement()) {
@@ -1313,7 +1270,7 @@ namespace dxvk {
       trackTexture(translucentMaterialData.getTransmittanceTexture(), transmittanceTextureIndex, hasTexcoords);
       trackTexture(translucentMaterialData.getEmissiveColorTexture(), emissiveColorTextureIndex, hasTexcoords);
 
-      float refractiveIndex = translucentMaterialData.getRefractiveIndex() * std::clamp(TranslucentMaterialOptions::refractiveIndexScale(), 0.0f, 3.0f);
+      float refractiveIndex = translucentMaterialData.getRefractiveIndex();
       Vector3 transmittanceColor = translucentMaterialData.getTransmittanceColor();
       float transmittanceMeasureDistance = translucentMaterialData.getTransmittanceMeasurementDistance();
       Vector3 emissiveColorConstant = translucentMaterialData.getEmissiveColorConstant();
@@ -1601,47 +1558,39 @@ namespace dxvk {
     m_accelManager.prepareSceneData(ctx, execBarriers, m_instanceManager);
     m_lightManager.prepareSceneData(ctx, m_cameraManager);
 
-    // Upload surface material buffer BEFORE the GPU culling dispatch so the
-    // compute shader can copy template material entries to per-instance slots.
-    // For PointInstancer duplicate entries we skip writeGPUData and advance past
-    // the gap — the GPU shader will fill those slots.
-    {
-      DxvkBufferCreateInfo matInfo;
-      matInfo.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-                    | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
-                    | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-      matInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
-                     | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-      matInfo.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+    // Build the TLAS
+    m_accelManager.buildTlas(ctx);
 
+    // Todo: These updates require a lot of temporary buffer allocations and memcopies, ideally we should memcpy directly into a mapped pointer provided by Vulkan,
+    // but we have to create a buffer to pass to DXVK's updateBuffer for now.
+    {
+      // Allocate the instance buffer and copy its contents from host to device memory
+      DxvkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+      info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+      info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+      info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+      // Surface Material buffer
       if (m_surfaceMaterialCache.getTotalCount() > 0) {
         ScopedGpuProfileZone(ctx, "updateSurfaceMaterials");
-        // Note: We duplicate the materials in the buffer so we don't have to do pointer chasing on the GPU
+        // Note: We duplicate the materials in the buffer so we don't have to do pointer chasing on the GPU (i.e. rather than BLAS->Surface->Material, do, BLAS->Surface, BLAS->Material)
         size_t surfaceMaterialsGPUSize = m_accelManager.getSurfaceCount() * kSurfaceMaterialGPUSize;
         if (m_startInMediumMaterialIndex_inCache != UINT32_MAX) {
           surfaceMaterialsGPUSize += kSurfaceMaterialGPUSize;
         }
 
-        matInfo.size = align(surfaceMaterialsGPUSize, kBufferAlignment);
-        if (m_surfaceMaterialBuffer == nullptr || matInfo.size > m_surfaceMaterialBuffer->info().size) {
-          m_surfaceMaterialBuffer = m_device->createBuffer(matInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, DxvkMemoryStats::Category::RTXBuffer, "Surface Material Buffer");
+        info.size = align(surfaceMaterialsGPUSize, kBufferAlignment);
+        info.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        if (m_surfaceMaterialBuffer == nullptr || info.size > m_surfaceMaterialBuffer->info().size) {
+          m_surfaceMaterialBuffer = m_device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, DxvkMemoryStats::Category::RTXBuffer, "Surface Material Buffer");
         }
 
         std::size_t dataOffset = 0;
-        uint32_t surfaceIndex = 0;
+        uint16_t surfaceIndex = 0;
         std::vector<unsigned char> surfaceMaterialsGPUData(surfaceMaterialsGPUSize);
         for (auto&& pInstance : m_accelManager.getOrderedInstances()) {
-          // For PointInstancer duplicates (entries beyond the template), skip
-          // writeGPUData — the GPU culling shader copies the template material.
-          const auto& surf = pInstance->surface;
-          if (surf.instancesToObject != nullptr &&
-              surf.surfaceIndexOfFirstInstance != SIZE_MAX &&
-              surfaceIndex > surf.surfaceIndexOfFirstInstance) {
-            dataOffset += kSurfaceMaterialGPUSize;
-          } else {
-            auto&& surfaceMaterial = m_surfaceMaterialCache.getObjectTable()[surf.surfaceMaterialIndex];
-            surfaceMaterial.writeGPUData(surfaceMaterialsGPUData.data(), dataOffset, surfaceIndex);
-          }
+          auto&& surfaceMaterial = m_surfaceMaterialCache.getObjectTable()[pInstance->surface.surfaceMaterialIndex];
+          surfaceMaterial.writeGPUData(surfaceMaterialsGPUData.data(), dataOffset, surfaceIndex);
           surfaceIndex++;
         }
 
@@ -1657,25 +1606,6 @@ namespace dxvk {
 
         ctx->writeToBuffer(m_surfaceMaterialBuffer, 0, surfaceMaterialsGPUData.size(), surfaceMaterialsGPUData.data());
       }
-    }
-
-    // GPU-driven PointInstancer culling: overwrites visible instance placeholders
-    // in m_vkInstanceBuffer with proper transforms and masks, copies per-instance
-    // surface and material data from templates. Must run after prepareSceneData
-    // (which uploads placeholders) and before buildTlas.
-    m_accelManager.dispatchPointInstancerCulling(ctx, m_cameraManager, m_surfaceMaterialBuffer);
-
-    // Build the TLAS
-    m_accelManager.buildTlas(ctx);
-
-    // Todo: These updates require a lot of temporary buffer allocations and memcopies, ideally we should memcpy directly into a mapped pointer provided by Vulkan,
-    // but we have to create a buffer to pass to DXVK's updateBuffer for now.
-    {
-      // Allocate the instance buffer and copy its contents from host to device memory
-      DxvkBufferCreateInfo info;
-      info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-      info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
-      info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
 
       // Surface Material Extension Buffer
       if (m_surfaceMaterialExtensionCache.getTotalCount() > 0) {
@@ -1691,7 +1621,7 @@ namespace dxvk {
         std::size_t dataOffset = 0;
         std::vector<unsigned char> surfaceMaterialExtensionsGPUData(surfaceMaterialExtensionsGPUSize);
 
-        uint32_t surfaceIndex = 0;
+        uint16_t surfaceIndex = 0;
         for (auto&& surfaceMaterialExtension : m_surfaceMaterialExtensionCache.getObjectTable()) {
           surfaceMaterialExtension.writeGPUData(surfaceMaterialExtensionsGPUData.data(), dataOffset, surfaceIndex);
           surfaceIndex++;
@@ -1794,11 +1724,6 @@ namespace dxvk {
       state.drawCall.transformData.worldToView = Matrix4 { rtCamera.getWorldToView() };
       state.drawCall.transformData.viewToProjection = Matrix4 { rtCamera.getViewToProjection() };
       state.drawCall.transformData.objectToView = state.drawCall.transformData.worldToView * state.drawCall.transformData.objectToWorld;
-    }
-
-    if (!state.gpuInstancingTransforms.empty()) {
-      m_externalGpuInstancingTransforms.push_back(std::move(state.gpuInstancingTransforms));
-      state.drawCall.transformData.instancesToObject = &m_externalGpuInstancingTransforms.back();
     }
 
     for (const RasterGeometry& submesh : m_pReplacer->accessExternalMesh(state.mesh)) {

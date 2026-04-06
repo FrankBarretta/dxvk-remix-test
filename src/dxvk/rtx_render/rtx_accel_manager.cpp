@@ -28,7 +28,6 @@
 #include "rtx_opacity_micromap_manager.h"
 #include "rtx_scene_manager.h"
 #include "rtx_accel_manager.h"
-#include "rtx_point_instancer_system.h"
 
 #include "../d3d9/d3d9_state.h"
 #include "rtx_matrix_helpers.h"
@@ -146,9 +145,6 @@ namespace dxvk {
       if (usesUnorderedApproximations != geometryUsesUnorderedApproximations) {
         return false;
       }
-      if (hasSssInstances != instance->isSubsurface()) {
-        return false;
-      }
     }
 
     BlasEntry* blasEntry = instance->getBlas();
@@ -168,7 +164,6 @@ namespace dxvk {
     customIndexFlags = geometryCustomIndexFlags;
     instanceFlags = geometryInstanceFlags;
     usesUnorderedApproximations = geometryUsesUnorderedApproximations;
-    hasSssInstances = instance->isSubsurface();
     return true;
   }
 
@@ -293,7 +288,7 @@ namespace dxvk {
 
     VkAabbPositionsKHR aabbPositions = { -1.f, -1.f, -1.f, 1.f, 1.f, 1.f };
 
-    DxvkBufferCreateInfo info;
+    DxvkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
     info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
     info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -404,7 +399,7 @@ namespace dxvk {
     auto& instances = instanceManager.getInstanceTable();
 
     // Allocate the transform buffer
-    DxvkBufferCreateInfo info;
+    DxvkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
     info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
     info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -428,8 +423,6 @@ namespace dxvk {
 
     m_reorderedSurfaces.clear();
     m_reorderedSurfacesFirstIndexOffset.clear();
-    m_pointInstancerBatches.clear();
-    memset(m_pointInstancerSlotsPerType, 0, sizeof(m_pointInstancerSlotsPerType));
     for (auto& instances : m_mergedInstances) {
       instances.clear();
     }
@@ -437,10 +430,7 @@ namespace dxvk {
     const uint32_t currentFrame = m_device->getCurrentFrameId();
 
     if (instances.size() > CUSTOM_INDEX_SURFACE_MASK) {
-      ONCE(Logger::err(str::format("DxvkRaytrace: instance count (", instances.size(),
-        ") exceeds the maximum surface index (", CUSTOM_INDEX_SURFACE_MASK,
-        ") representable in ", SURFACE_INDEX_BIT_COUNT, "-bit instanceCustomIndex field. "
-        "Surfaces beyond the limit will alias index 0.")));
+      ONCE(Logger::err("DxvkRaytrace: instances size is greater than max supported custom index value"));
     }
 
     if (opacityMicromapManager) {
@@ -673,7 +663,15 @@ namespace dxvk {
         if (rtInstance->surface.instancesToObject == nullptr) {
           addBlas(rtInstance, blasEntry, nullptr);
         } else {
-          addPointInstancerBlas(rtInstance, blasEntry);
+          // This RtInstance is a PointInstancer - it represents multiple instances on the GPU.
+          // Track the starting index for this block of instances in m_reorderedSurfaces.
+          rtInstance->surface.surfaceIndexOfFirstInstance = m_reorderedSurfaces.size();
+
+          // Add the same RtInstance pointer to m_reorderedSurfaces multiple times
+          // Add a separate VkAccelerationStructureInstanceKHR to m_mergedInstances each time.
+          for (auto& instanceToObject : *rtInstance->surface.instancesToObject) {
+            addBlas(rtInstance, blasEntry, &instanceToObject);
+          }
         }
       }
 
@@ -734,14 +732,6 @@ namespace dxvk {
       totalPrimitiveIDOffset += primitiveCount;
     }
 
-    // Validate total primitive count against the engine-wide PRIMITIVE_INDEX_BIT_COUNT limit.
-    if (totalPrimitiveIDOffset > PRIMITIVE_INDEX_MAX_VALUE) {
-      ONCE(Logger::err(str::format("DxvkRaytrace: total primitive count (", totalPrimitiveIDOffset,
-        ") exceeds the maximum primitive index (", PRIMITIVE_INDEX_MAX_VALUE,
-        ") representable in ", PRIMITIVE_INDEX_BIT_COUNT, " bits. "
-        "Downstream systems (NEE cache, prefix-sum lookups) may produce incorrect results.")));
-    }
-
     buildBlases(ctx, execBarriers, cameraManager, opacityMicromapManager, instanceManager, 
                 textures, instances, blasBuckets, blasToBuild, blasRangesToBuild, totalScratchMemory);
   }
@@ -770,9 +760,6 @@ namespace dxvk {
       m_mergedInstances[Tlas::Unordered].push_back(blasInstance);
     } else {
       m_mergedInstances[Tlas::Opaque].push_back(blasInstance);
-      if (instance->isSubsurface()) {
-        m_mergedInstances[Tlas::SSS].push_back(blasInstance);
-      }
     }
 
     // Append the instance to the reordered surface list
@@ -881,9 +868,6 @@ namespace dxvk {
         m_mergedInstances[Tlas::Unordered].push_back(instance);
       } else {
         m_mergedInstances[Tlas::Opaque].push_back(instance);
-        if (bucket->hasSssInstances) {
-          m_mergedInstances[Tlas::SSS].push_back(instance);
-        }
       }
     }
   }
@@ -921,10 +905,8 @@ namespace dxvk {
         // Shader data
         MemoryBillboard& memory = memoryBillboards[index];
         memory.center = billboard.center;
-        memory.surfaceIndexAndMaterialType =
-          (billboard.instance->getSurfaceIndex() & CUSTOM_INDEX_SURFACE_MASK) |
-          (((billboard.instance->getVkInstance().instanceCustomIndex >> CUSTOM_INDEX_MATERIAL_TYPE_BIT) & surfaceMaterialTypeMask) << CUSTOM_INDEX_MATERIAL_TYPE_BIT);
-        assert(billboard.instance->getSurfaceIndex() <= SURFACE_INDEX_MAX_VALUE && "Billboard surfaceIndex exceeds SURFACE_INDEX_MAX_VALUE");
+        memory.surfaceIndex = billboard.instance->getSurfaceIndex();
+        memory.materialType = (billboard.instance->getVkInstance().instanceCustomIndex >> CUSTOM_INDEX_MATERIAL_TYPE_BIT) & surfaceMaterialTypeMask;
         memory.inverseHalfWidth = 2.f / billboard.width;
         memory.inverseHalfHeight = 2.f / billboard.height;
         memory.xAxis = billboard.xAxis;
@@ -978,37 +960,30 @@ namespace dxvk {
     }
 
     // Allocate the instance buffer and copy its contents from host to device memory
-    // STORAGE_BUFFER_BIT is required for the PointInstancer GPU culling compute shader
-    // which writes VkAccelerationStructureInstanceKHR entries directly into this buffer.
-    DxvkBufferCreateInfo info;
-    info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-               | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
-               | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    DxvkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
     info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
-    info.size = 0;
 
-    // Vk instance buffer: normal instances + reserved PointInstancer slots per type
-    for (int t = 0; t < Tlas::Count; ++t) {
-      info.size += m_mergedInstances[t].size() + m_pointInstancerSlotsPerType[t];
+    // Vk instance buffer
+    for (const auto& instances : m_mergedInstances) {
+      info.size += instances.size();
     }
     info.size = align(info.size * sizeof(VkAccelerationStructureInstanceKHR), kBufferAlignment);
 
-    if ((m_vkInstanceBuffer == nullptr || info.size > m_vkInstanceBuffer->info().size) && info.size != 0) {
+    if (m_vkInstanceBuffer == nullptr || info.size > m_vkInstanceBuffer->info().size) {
       m_vkInstanceBuffer = m_device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, DxvkMemoryStats::Category::RTXAccelerationStructure, "Instance Buffer");
       Logger::debug("DxvkRaytrace: Vulkan AS Instance Realloc");
     }
 
-    // Write only the CPU-populated (normal) instance data.  PointInstancer
-    // regions are left for the GPU culling shader to fill directly.
+    // Write instance data
     size_t offset = 0;
-    for (int t = 0; t < Tlas::Count; ++t) {
-      if (!m_mergedInstances[t].empty()) {
-        const size_t size = m_mergedInstances[t].size() * sizeof(VkAccelerationStructureInstanceKHR);
-        ctx->writeToBuffer(m_vkInstanceBuffer, offset, size, m_mergedInstances[t].data());
+    for (const auto& instances : m_mergedInstances) {
+      if (!instances.empty()) {
+        const size_t size = instances.size() * sizeof(VkAccelerationStructureInstanceKHR);
+        ctx->writeToBuffer(m_vkInstanceBuffer, offset, size, instances.data());
+        offset += size;
       }
-      // Advance past both normal and PointInstancer regions for this TLAS type
-      offset += (m_mergedInstances[t].size() + m_pointInstancerSlotsPerType[t]) * sizeof(VkAccelerationStructureInstanceKHR);
     }
 
     // Vk billboard buffer
@@ -1021,37 +996,6 @@ namespace dxvk {
       // Write billboard data
       ctx->writeToBuffer(m_billboardsBuffer, 0, numActiveBillboards * sizeof(MemoryBillboard), memoryBillboards.data());
     }
-  }
-
-  void AccelManager::dispatchPointInstancerCulling(Rc<DxvkContext> ctx, const CameraManager& cameraManager,
-                                                   const Rc<DxvkBuffer>& surfaceMaterialBuffer) {
-    if (m_pointInstancerBatches.empty() || m_vkInstanceBuffer == nullptr) {
-      return;
-    }
-
-    // Compute the byte offset for each TLAS type within m_vkInstanceBuffer.
-    // Layout per type: [normal instances][PointInstancer instances]
-    size_t typeBaseOffset[Tlas::Count] = {};
-    for (size_t n = 1; n < Tlas::Count; ++n) {
-      typeBaseOffset[n] = typeBaseOffset[n - 1]
-                        + (m_mergedInstances[n - 1].size() + m_pointInstancerSlotsPerType[n - 1])
-                        * sizeof(VkAccelerationStructureInstanceKHR);
-    }
-
-    // Resolve each batch's instanceBufferByteOffset.
-    // PointInstancer slots sit after the normal instances within each type's region.
-    for (auto& batch : m_pointInstancerBatches) {
-      batch.instanceBufferByteOffset = static_cast<uint32_t>(
-        typeBaseOffset[batch.tlasType]
-        + m_mergedInstances[batch.tlasType].size() * sizeof(VkAccelerationStructureInstanceKHR)
-        + batch.firstIndexInType * sizeof(VkAccelerationStructureInstanceKHR));
-    }
-
-    // Dispatch the GPU culling compute shader via PointInstancerSystem
-    RtxPointInstancerSystem& system = m_device->getCommon()->metaPointInstancerSystem();
-    const Vector3 cameraPos = cameraManager.getMainCamera().getPosition();
-
-    system.dispatchCulling(ctx, m_vkInstanceBuffer, m_surfaceBuffer, surfaceMaterialBuffer, m_pointInstancerBatches, cameraPos);
   }
 
   void AccelManager::buildParticleSurfaceMapping(std::vector<uint32_t>& surfaceIndexMapping) {
@@ -1090,7 +1034,7 @@ namespace dxvk {
     // Fix missed surface mapping by searching among objects with the same hash value, and choose the closest one.
     for (int i = 0; i < surfaceIndexMapping.size(); i++) {
       // Skip objects that have surface mapping
-      if (surfaceIndexMapping[i] != SURFACE_INDEX_INVALID) {
+      if (surfaceIndexMapping[i] != BINDING_INDEX_INVALID) {
         continue;
       }
 
@@ -1150,12 +1094,10 @@ namespace dxvk {
     const auto surfacesGPUSize = m_reorderedSurfaces.size() * kSurfaceGPUSize;
 
     // Allocate the instance buffer and copy its contents from host to device memory
-    // STORAGE_BUFFER_BIT is required for the GPU PointInstancer culling shader
-    // which writes per-instance surface data (transforms) directly into this buffer.
-    DxvkBufferCreateInfo info;
+    DxvkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
     info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
     info.size = align(surfacesGPUSize, kBufferAlignment);
     if (m_surfaceBuffer == nullptr || info.size > m_surfaceBuffer->info().size) {
@@ -1172,34 +1114,18 @@ namespace dxvk {
       const auto& currentInstance = *m_reorderedSurfaces[i];
       RtSurface& currentSurface = m_reorderedSurfaces[i]->surface;
 
-      // For PointInstancer entries beyond the first, do nothing.  The GPU culling shader will 
-      // patch per-instance transforms and set per-instance customInstanceIndex later.
-      if (currentSurface.instancesToObject != nullptr &&  currentSurface.surfaceIndexOfFirstInstance != SIZE_MAX && i > currentSurface.surfaceIndexOfFirstInstance) {
-        dataOffset += kSurfaceGPUSize;
-      } else {
-        // Split instance geometry need to have their first index offset set in their corresponding surface instances
-        currentSurface.firstIndex += m_reorderedSurfacesFirstIndexOffset[i];
-        currentSurface.writeGPUData(surfacesGPUData.data(), dataOffset, i);
-        currentSurface.firstIndex -= m_reorderedSurfacesFirstIndexOffset[i];
-      }
+      // Split instance geometry need to have their first index offset set in their corresponding surface instances
+      currentSurface.firstIndex += m_reorderedSurfacesFirstIndexOffset[i];
+      currentSurface.writeGPUData(surfacesGPUData.data(), dataOffset, i);
+      currentSurface.firstIndex -= m_reorderedSurfacesFirstIndexOffset[i];
 
       // Find the size of the surface mapping buffer
-      // Skip SURFACE_INDEX_INVALID (new instances with no previous-frame data) to avoid
-      // oversizing the mapping vector 
-      const uint32_t prevIdx = currentInstance.getPreviousSurfaceIndex();
-      if (prevIdx != SURFACE_INDEX_INVALID) {
-        maxPreviousSurfaceIndex = std::max(maxPreviousSurfaceIndex, prevIdx);
+      if (currentInstance.surface.instancesToObject) {
+        maxPreviousSurfaceIndex = std::max(maxPreviousSurfaceIndex, uint32_t(currentInstance.getPreviousSurfaceIndex() + currentInstance.surface.instancesToObject->size()));
+      } else {
+        maxPreviousSurfaceIndex = std::max(maxPreviousSurfaceIndex, currentInstance.getPreviousSurfaceIndex());
       }
     }
-
-    // The GPU's SharedSurfaceIndex texture may reference any surface index from the
-    // previous frame.  Ensure the mapping covers at least the previous frame's surface
-    // count so those GPU lookups read SURFACE_INDEX_INVALID rather than stale buffer data.
-    auto& previousFrameSurfaceCount = uploadSurfaceDataFuncState.previousFrameSurfaceCount;
-    if (previousFrameSurfaceCount > 0) {
-      maxPreviousSurfaceIndex = std::max(maxPreviousSurfaceIndex, previousFrameSurfaceCount - 1);
-    }
-    previousFrameSurfaceCount = static_cast<uint32_t>(m_reorderedSurfaces.size());
 
     assert(dataOffset == surfacesGPUSize);
     assert(surfacesGPUData.size() == surfacesGPUSize);
@@ -1208,30 +1134,32 @@ namespace dxvk {
 
     // Allocate and initialize the surface mapping buffer
     surfaceIndexMapping.resize(maxPreviousSurfaceIndex + 1);
-    std::fill(surfaceIndexMapping.begin(), surfaceIndexMapping.end(), SURFACE_INDEX_INVALID);
+    std::fill(surfaceIndexMapping.begin(), surfaceIndexMapping.end(), BINDING_INDEX_INVALID);
     
-    // Assign surface indices to instances that don't have one yet (i.e. those that
-    // entered m_reorderedSurfaces via addBlas or bucket insertion rather than the
-    // early setSurfaceIndex path for zero-mask OMM/billboard instances).
-    // Also populate the previous-->current frame surface index mapping.
+    // Assign the surface indices to instances for this frame,
+    // Fill the surface mapping buffer with correct indices
     for (uint32_t surfaceIndex = 0; surfaceIndex < m_reorderedSurfaces.size(); surfaceIndex++) {
       RtInstance& surface = *m_reorderedSurfaces[surfaceIndex];
 
-      if (surface.getSurfaceIndex() == SURFACE_INDEX_INVALID) {
+      // Ensure instances have the first seen reordered surface index set which contains a non-offsetted firstIndex of the surface
+      // The actual index offsetting is done in the surface instances copied to the GPU.
+      // OpacityMicromap baker passes index offset to add on top of instance's surface firstIndex via a constant buffer 
+      //
+      if (surface.getSurfaceIndex() == BINDING_INDEX_INVALID) {
         surface.setSurfaceIndex(surfaceIndex);
 
-        // For PointInstancers, all instances share a single surface entry
+        // Single RtInstance appears multiple times in m_reorderedSurfaces, want to do this for only the first appearance.
         if (surface.surface.instancesToObject) {
           assert(surfaceIndex == surface.surface.surfaceIndexOfFirstInstance);
-          if (surface.getPreviousSurfaceIndex() != SURFACE_INDEX_INVALID) {
-            surfaceIndexMapping[surface.getPreviousSurfaceIndex()] = surfaceIndex;
+          for (size_t i = 0; i < surface.surface.instancesToObject->size(); ++i) {
+            surfaceIndexMapping[surface.getPreviousSurfaceIndex() + i] = surfaceIndex + i;
           }
           surface.setPreviousSurfaceIndex(surfaceIndex);
         }
       }
 
       if (surface.getBillboardCount() == 0 && !surface.surface.instancesToObject) {
-        if (surface.getPreviousSurfaceIndex() != SURFACE_INDEX_INVALID) {
+        if (surface.getPreviousSurfaceIndex() != BINDING_INDEX_INVALID) {
           surfaceIndexMapping[surface.getPreviousSurfaceIndex()] = surfaceIndex;
         }
         surface.setPreviousSurfaceIndex(surfaceIndex);
@@ -1351,16 +1279,14 @@ namespace dxvk {
 
     ScopedGpuProfileZone(ctx, "buildTLAS");
 
-    // Four barriers in one:
+    // Two barriers in one:
     // Accel build bit - to protect from BLAS builds
     // Transfer bit - to protect from updateBuffer in prepareSceneData
-    // Compute bit - to protect from GPU PointInstancer culling writes to instance, surface, and material buffers
-    // RT shader read - make compute writes to surface/material buffers visible to ray tracing passes
     ctx->emitMemoryBarrier(0,
-      VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-      VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
+      VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_TRANSFER_WRITE_BIT,
+      VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+      VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 
     for (auto&& blas : m_blasPool) {
       ctx->getCommandList()->trackResource<DxvkAccess::Read>(blas->accelStructure);
@@ -1369,11 +1295,6 @@ namespace dxvk {
     size_t totalScratchSize = 0;
     internalBuildTlas<Tlas::Opaque>(ctx, totalScratchSize);
     internalBuildTlas<Tlas::Unordered>(ctx, totalScratchSize);
-    // Only build TLAS for SSS when necessary
-    const bool isBuildSssTlas = RtxOptions::SubsurfaceScattering::enableDiffusionProfile() && (m_mergedInstances[Tlas::SSS].size() + m_pointInstancerSlotsPerType[Tlas::SSS]) > 0;
-    if (isBuildSssTlas) {
-      internalBuildTlas<Tlas::SSS>(ctx, totalScratchSize);
-    }
 
     ctx->emitMemoryBarrier(0,
       VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
@@ -1392,7 +1313,7 @@ namespace dxvk {
 
   template<Tlas::Type type>
   void AccelManager::internalBuildTlas(Rc<DxvkContext> ctx, size_t& totalScratchSize) {
-    static constexpr const char* names[] = { "TLAS_Opaque", "TLAS_NonOpaque", "TLAS_SSS" };
+    static constexpr const char* names[] = { "TLAS_Opaque", "TLAS_NonOpaque" };
     ScopedGpuProfileZone(ctx, names[type]);
     const VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR | additionalAccelerationStructureFlags();
 
@@ -1404,9 +1325,9 @@ namespace dxvk {
     instancesVk.arrayOfPointers = VK_FALSE;
     instancesVk.data.deviceAddress = m_vkInstanceBuffer->getDeviceAddress();
 
-    // Rewind address to tlas start (normal + PointInstancer slots per preceding type)
+    // Rewind address to tlas start
     for (size_t n = 0; n < type; ++n) {
-      instancesVk.data.deviceAddress += (m_mergedInstances[n].size() + m_pointInstancerSlotsPerType[n]) * sizeof(VkAccelerationStructureInstanceKHR);
+      instancesVk.data.deviceAddress += m_mergedInstances[n].size() * sizeof(VkAccelerationStructureInstanceKHR);
     }
 
     // Put the above into a VkAccelerationStructureGeometryKHR. We need to put the
@@ -1423,7 +1344,7 @@ namespace dxvk {
     buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
 
-    const uint32_t numInstances = uint32_t(m_mergedInstances[type].size() + m_pointInstancerSlotsPerType[type]);
+    const uint32_t numInstances = uint32_t(m_mergedInstances[type].size());
     VkAccelerationStructureBuildSizesInfoKHR sizeInfo { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
     vkd->vkGetAccelerationStructureBuildSizesKHR(vkd->device(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &numInstances, &sizeInfo);
 
@@ -1436,7 +1357,7 @@ namespace dxvk {
 
     if (tlas.accelStructure == nullptr || sizeInfo.accelerationStructureSize > tlas.accelStructure->info().size) {
       ScopedGpuProfileZone(ctx, "buildTLAS_createAccelStructure");
-      DxvkBufferCreateInfo info;
+      DxvkBufferCreateInfo info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
       info.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
       info.stages = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
       info.access = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
@@ -1525,78 +1446,4 @@ namespace dxvk {
     }
     return true;
   }
-
-  void AccelManager::addPointInstancerBlas(RtInstance* rtInstance, BlasEntry* blasEntry) {
-    // This RtInstance is a PointInstancer — GPU-driven culling path.
-    // Reserve N surface slots (one per instance) so each gets its own
-    // surface/material ID in customInstanceIndex.  Only the first slot is
-    // fully populated on the CPU; the GPU culling shader copies the template
-    // surface data and patches per-instance transforms for the rest.
-    const auto* transforms = rtInstance->surface.instancesToObject;
-    uint32_t instanceCount = static_cast<uint32_t>(transforms->size());
-
-    // Reserve N surface entries — same RtInstance* for each, but each gets
-    // a unique surfaceIndex.  The first entry is the "template" that
-    // uploadSurfaceData writes fully; entries 1..N-1 are copies.
-    const uint32_t surfaceIndex = static_cast<uint32_t>(m_reorderedSurfaces.size());
-
-    // Clamp instance count so the last reserved surface index stays within the 21-bit limit.
-    // Exceeding SURFACE_INDEX_MAX_VALUE would cause the GPU culling shader to write
-    // truncated customInstanceIndex values, leading to surface/material aliasing or OOB access.
-    if (surfaceIndex + instanceCount - 1 > SURFACE_INDEX_MAX_VALUE) {
-      const uint32_t maxAllowed = (surfaceIndex <= SURFACE_INDEX_MAX_VALUE) ? (SURFACE_INDEX_MAX_VALUE - surfaceIndex + 1) : 0;
-      ONCE(Logger::err(str::format("DxvkRaytrace: PointInstancer needs ", instanceCount, " surface slots starting at ", surfaceIndex, " but only ", maxAllowed,
-                                   " fit within SURFACE_INDEX_MAX_VALUE (", SURFACE_INDEX_MAX_VALUE, "). Clamping to ", maxAllowed, " instances.")));
-      instanceCount = maxAllowed;
-      if (instanceCount == 0) {
-        return;
-      }
-    }
-
-    rtInstance->surface.surfaceIndexOfFirstInstance = surfaceIndex;
-    m_reorderedSurfaces.insert(m_reorderedSurfaces.end(), instanceCount, rtInstance);
-    m_reorderedSurfacesFirstIndexOffset.insert(m_reorderedSurfacesFirstIndexOffset.end(), instanceCount, 0);
-
-    // Determine TLAS type
-    const bool isUnordered = rtInstance->usesUnorderedApproximations() &&
-      RtxOptions::enableSeparateUnorderedApproximations();
-    const auto primaryType = isUnordered ? Tlas::Unordered : Tlas::Opaque;
-
-    // Reserve N slots for the GPU shader to fill — nothing pushed to m_mergedInstances
-    const uint32_t firstIndexInType = m_pointInstancerSlotsPerType[primaryType];
-    m_pointInstancerSlotsPerType[primaryType] += instanceCount;
-
-    // Build upper bits for instanceCustomIndex
-    const uint32_t upperBits = rtInstance->getVkInstance().instanceCustomIndex & ~uint32_t(CUSTOM_INDEX_SURFACE_MASK);
-    VkGeometryInstanceFlagsKHR flags = rtInstance->getVkInstance().flags;
-    if (rtInstance->isObjectToWorldMirrored()) {
-      flags ^= VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR;
-    }
-
-    // Record batch for GPU dispatch
-    PointInstancerBatch batch {};
-    batch.transforms = transforms;
-    batch.objectToWorld = rtInstance->surface.objectToWorld;
-    batch.prevObjectToWorld = rtInstance->surface.prevObjectToWorld;
-    batch.instanceCount = instanceCount;
-    batch.baseSurfaceIndex = surfaceIndex;
-    batch.customIndexFlags = upperBits;
-    batch.instanceMask = rtInstance->getVkInstance().mask;
-    batch.sbtOffsetAndFlags = (rtInstance->getVkInstance().instanceShaderBindingTableRecordOffset & 0x00FFFFFFu) | (static_cast<uint32_t>(flags) << 24);
-    batch.blasReference = blasEntry->dynamicBlas->accelerationStructureReference;
-    batch.firstIndexInType = firstIndexInType;
-    batch.tlasType = primaryType;
-    batch.instanceBufferByteOffset = 0; // resolved before dispatch
-    m_pointInstancerBatches.push_back(batch);
-
-    // Also reserve SSS TLAS slots if needed
-    if (!isUnordered && rtInstance->isSubsurface()) {
-      PointInstancerBatch sssBatch = batch;
-      sssBatch.firstIndexInType = m_pointInstancerSlotsPerType[Tlas::SSS];
-      sssBatch.tlasType = Tlas::SSS;
-      m_pointInstancerSlotsPerType[Tlas::SSS] += instanceCount;
-      m_pointInstancerBatches.push_back(sssBatch);
-    }
-  }
-
 }  // namespace dxvk

@@ -219,10 +219,6 @@ struct RaytraceGeometry {
   Rc<DxvkBuffer> historyBuffer[2] = {nullptr};
   Rc<DxvkBuffer> indexCacheBuffer = nullptr;
 
-  // Set to true after the smooth normals compute pass has been applied to this geometry.
-  // Used to avoid redundant recomputation on subsequent frames for static geometry.
-  bool smoothNormalsApplied = false;
-
   bool usesIndices() const { 
     return indexBuffer.defined();
   }
@@ -406,18 +402,13 @@ struct GeometryBufferData {
       positionData = nullptr;
     }
 
-    texcoordStride = 0;
-    texcoordData = nullptr;
-    // Only float32 texcoord formats can be safely read as Vector2 on the CPU.
-    // R16G16_SFLOAT and other non-float32 formats are converted to R32G32_SFLOAT by the GPU interleaver;
-    // treat them as absent here to avoid mis-reading packed half-float data as float2.
     if (geometryData.texcoordBuffer.defined()) {
-      const VkFormat texFmt = geometryData.texcoordBuffer.vertexFormat();
-      if (texFmt == VK_FORMAT_R32G32_SFLOAT || texFmt == VK_FORMAT_R32G32B32_SFLOAT || texFmt == VK_FORMAT_R32G32B32A32_SFLOAT) {
-        constexpr size_t texcoordSubElementSize = sizeof(float);
-        texcoordStride = geometryData.texcoordBuffer.stride() / texcoordSubElementSize;
-        texcoordData = (float*) geometryData.texcoordBuffer.mapPtr((size_t) geometryData.texcoordBuffer.offsetFromSlice());
-      }
+      constexpr size_t texcoordSubElementSize = sizeof(float);
+      texcoordStride = geometryData.texcoordBuffer.stride() / texcoordSubElementSize;
+      texcoordData = (float*) geometryData.texcoordBuffer.mapPtr((size_t) geometryData.texcoordBuffer.offsetFromSlice());
+    } else {
+      texcoordStride = 0;
+      texcoordData = nullptr;
     }
 
     if (geometryData.normalBuffer.defined()) {
@@ -524,7 +515,6 @@ enum class InstanceCategories : uint32_t {
   IgnoreBakedLighting,
   IgnoreTransparencyLayer,
   ParticleEmitter,
-  SmoothNormals,
 
   Count,
 };
@@ -577,7 +567,6 @@ struct DrawCallState {
   bool hasTextureCoordinates() const {
     return getGeometryData().texcoordBuffer.defined() || getTransformData().texgenMode != TexGenMode::None;
   }
-  bool isEye() const;
 
   bool stencilEnabled = false;
 
@@ -601,12 +590,6 @@ struct DrawCallState {
 
   bool isDrawingToRaytracedRenderTarget = false;
   bool isUsingRaytracedRenderTarget = false;
-
-  // Set when the Sky category was assigned by skyAutoDetect heuristic
-  // (as opposed to explicit methods like skyBoxTextures/skyBoxGeometries/skyMinZThreshold).
-  // Used by tryHandleSky to optionally bypass cubemap rasterization for autoDetected sky,
-  // since it may be world geometry that should go through reprojection instead.
-  bool skyAutoDetected = false;
 
   void setupCategoriesForTexture();
   void setupCategoriesForGeometry();
@@ -681,6 +664,7 @@ private:
   friend class RtxContext;
   friend class SceneManager;
   friend struct D3D9Rtx;
+  friend struct D3D11Rtx;
   friend class TerrainBaker;
   friend struct RemixAPIPrivateAccessor;
   friend class RtxParticleSystemManager;
@@ -841,7 +825,6 @@ struct Tlas {
   enum Type : size_t {
     Opaque,
     Unordered,
-    SSS,
 
     Count
   };

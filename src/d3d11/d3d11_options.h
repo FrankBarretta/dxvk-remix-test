@@ -13,6 +13,14 @@ namespace dxvk {
   struct D3D11Options {
     D3D11Options(const Config& config, const Rc<DxvkDevice>& device);
 
+    /// Enables the experimental Remix integration path
+    /// for D3D11 immediate contexts.
+    bool enableRemix;
+
+    /// Uses an RTX execution context for the D3D11
+    /// immediate context instead of the stable fallback.
+    bool useRtxContext;
+
     /// Enables speed hack for mapping on deferred contexts
     ///
     /// This can substantially speed up some games, but may

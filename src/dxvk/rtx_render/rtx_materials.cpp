@@ -38,14 +38,6 @@ float getDisplacementFactor() {
   return RtxOptions::Displacement::displacementFactor();
 }
 
-float getDisplacementInFactor() {
-  return RtxOptions::Displacement::displacementFactor() * RtxOptions::Displacement::displacementInFactor();
-}
-
-float getDisplacementOutFactor() {
-  return RtxOptions::Displacement::displacementFactor() * RtxOptions::Displacement::displacementOutFactor();
-}
-
 dxvk::OpaqueMaterialData LegacyMaterialData::createDefault() {
   OpaqueMaterialData opaqueMat;
   opaqueMat.setAnisotropyConstant(LegacyMaterialDefaults::anisotropy());
@@ -69,9 +61,6 @@ template<> OpaqueMaterialData LegacyMaterialData::as() const {
   OpaqueMaterialData opaqueMat(defaultLegacyOpaqueMaterial);
   if (LegacyMaterialDefaults::useAlbedoTextureIfPresent()) {
     opaqueMat.setAlbedoOpacityTexture(getColorTexture());
-  }
-  if (getColorTexture2().isValid()) {
-    opaqueMat.setSecondaryTexture(getColorTexture2());
   }
   // Indicate that we have an exact sampler to use on this material, directly from game
   if (getSampler().ptr()) {

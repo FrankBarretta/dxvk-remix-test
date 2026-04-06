@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2025-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -37,10 +37,10 @@ namespace dxvk {
 void RtxGraphGUI::showGraphVisualization(const Rc<DxvkContext>& ctx) {
   RtxContext* rtxContext = static_cast<RtxContext*>(ctx.ptr());
   const SceneManager& sceneManager = rtxContext->getSceneManager();
-  RemixGui::Separator();
-  RemixGui::Checkbox("Enable", &GraphManager::enableObject());
+  ImGui::Separator();
+  ImGui::Checkbox("Enable", &GraphManager::enableObject());
   ImGui::SameLine(0.0f, 20.f);
-  RemixGui::Checkbox("Pause", &GraphManager::pauseGraphUpdatesObject());
+  ImGui::Checkbox("Pause", &GraphManager::pauseGraphUpdatesObject());
   ImGui::SameLine(0.0f, 20.f);
   if (IMGUI_ADD_TOOLTIP(ImGui::Button("Reset Graph State"), "Destroys then recreates all graphs, clearing any stored state.")) {
     const GraphManager& graphManager = sceneManager.getGraphManager();
@@ -60,7 +60,7 @@ void RtxGraphGUI::showGraphVisualization(const Rc<DxvkContext>& ctx) {
 }
 
 void RtxGraphGUI::showGraphSelector(const SceneManager& sceneManager) {
-  if (RemixGui::CollapsingHeader("Select Graph Instance:", ImGuiTreeNodeFlags_DefaultOpen)) {
+  if (ImGui::CollapsingHeader("Select Graph Instance:", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Indent();
     // Get graph manager and available instances
     const GraphManager& graphManager = sceneManager.getGraphManager();
@@ -153,7 +153,7 @@ void RtxGraphGUI::showComponentList() {
     ImGui::Text("No graph selected.");
     return;
   }
-  if (RemixGui::CollapsingHeader("Components:", ImGuiTreeNodeFlags_DefaultOpen)) {
+  if (ImGui::CollapsingHeader("Components:", ImGuiTreeNodeFlags_DefaultOpen)) {
     // Show components in a scrollable list with resizable height
     ImGui::BeginChild("ComponentList", ImVec2(0, m_componentListHeight), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     
@@ -163,7 +163,7 @@ void RtxGraphGUI::showComponentList() {
       // Component header with collapsible tree node.  Included the index so each section has a unique name.
       std::string headerText = component.typeName + " (" + std::to_string(i) + ")";
       
-      if (RemixGui::CollapsingHeader(headerText.c_str())) {
+      if (ImGui::CollapsingHeader(headerText.c_str())) {
         // Show component description as tooltip on header hover
         if (ImGui::IsItemHovered() && !component.docString.empty()) {
           ImGui::BeginTooltip();

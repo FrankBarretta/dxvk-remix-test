@@ -26,8 +26,5 @@
 
 // Inputs
 
-[[vk::binding(PARTICLE_SYSTEM_BINDING_CONSTANTS)]]
+layout(binding = PARTICLE_SYSTEM_BINDING_CONSTANTS)
 ConstantBuffer<ParticleSystemConstants> particleCb;
-
-[[vk::binding(PARTICLE_SYSTEM_BINDING_ANIMATION_DATA_INPUT)]]
-Sampler2D<float4> animationDataTex;

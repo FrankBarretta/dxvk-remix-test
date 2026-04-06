@@ -49,6 +49,10 @@ namespace dxvk {
 
     UINT STDMETHODCALLTYPE GetFrameLatency();
 
+                Rc<DxvkDevice> GetDxvkDevice() const {
+                        return m_device;
+                }
+
     HANDLE STDMETHODCALLTYPE GetFrameLatencyEvent();
 
     HRESULT STDMETHODCALLTYPE ChangeProperties(
@@ -119,7 +123,8 @@ namespace dxvk {
     void SubmitPresent(
             D3D11ImmediateContext*  pContext,
       const vk::PresenterSync&      Sync,
-            uint32_t                FrameId);
+                uint32_t                FrameId,
+                uint32_t                ImageIndex);
 
     void SynchronizePresent();
 

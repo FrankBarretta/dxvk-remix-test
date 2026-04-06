@@ -21,6 +21,7 @@
 */
 #include "dxvk_device.h"
 #include "dxvk_instance.h"
+#include "dxvk_early_trace.h"
 #include "rtx_render/rtx_context.h"
 #include "dxvk_scoped_annotation.h"
 #include "rtx_render/rtx_ray_reconstruction.h"
@@ -350,10 +351,13 @@ namespace dxvk {
   
   
   void DxvkDevice::initResources() {
+    DxvkEarlyTrace("DxvkDevice::initResources begin");
     m_objects.dummyResources().clearResources(this);
+    DxvkEarlyTrace("DxvkDevice::initResources dummy resources cleared");
 
     // NV-DXVK start: RTX initializer
     m_objects.getRtxInitializer().initialize();
+    DxvkEarlyTrace("DxvkDevice::initResources RTX initializer complete");
     // NV-DXVK end
   }
 

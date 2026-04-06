@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2023-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2023-2025, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -170,7 +170,23 @@ namespace dxvk {
       )
   };
 
-  RtxGlobalVolumetrics::RtxGlobalVolumetrics(DxvkDevice* device) : CommonDeviceObject(device), RtxPass(device) {}
+  RtxGlobalVolumetrics::RtxGlobalVolumetrics(DxvkDevice* device) : CommonDeviceObject(device), RtxPass(device) {
+    // Volumetrics Options
+
+    transmittanceColor.setDeferred(Vector3(
+      std::clamp(transmittanceColor().x, 0.0f, 1.0f),
+      std::clamp(transmittanceColor().y, 0.0f, 1.0f),
+      std::clamp(transmittanceColor().z, 0.0f, 1.0f)));
+    singleScatteringAlbedo.setDeferred(Vector3(
+      std::clamp(singleScatteringAlbedo().x, 0.0f, 1.0f),
+      std::clamp(singleScatteringAlbedo().y, 0.0f, 1.0f),
+      std::clamp(singleScatteringAlbedo().z, 0.0f, 1.0f)));
+
+    fogRemapMaxDistanceMinMeters.setDeferred(std::min(fogRemapMaxDistanceMinMeters(), fogRemapMaxDistanceMaxMeters()));
+    fogRemapMaxDistanceMaxMeters.setDeferred(std::max(fogRemapMaxDistanceMinMeters(), fogRemapMaxDistanceMaxMeters()));
+    fogRemapTransmittanceMeasurementDistanceMinMeters.setDeferred(std::min(fogRemapTransmittanceMeasurementDistanceMinMeters(), fogRemapTransmittanceMeasurementDistanceMaxMeters()));
+    fogRemapTransmittanceMeasurementDistanceMaxMeters.setDeferred(std::max(fogRemapTransmittanceMeasurementDistanceMinMeters(), fogRemapTransmittanceMeasurementDistanceMaxMeters()));
+  }
 
   // Quality level presets, x component controls the froxelGridResolutionScale and the y component controls the froxelDepthSlices settings.
   static const int2 qualityModes[RtxGlobalVolumetrics::QualityLevel::QualityCount] = {
@@ -217,52 +233,52 @@ namespace dxvk {
   }
 
   void RtxGlobalVolumetrics::showImguiSettings() {
-    if (RemixGui::CollapsingHeader("Froxel Radiance Cache", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Froxel Radiance Cache", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::Indent();
 
       showPresetMenu();
 
-      RemixGui::Separator();
+      ImGui::Separator();
 
       static bool showAdvanced = false;
-      RemixGui::Checkbox("Show Advanced Options", &showAdvanced);
+      ImGui::Checkbox("Show Advanced Options", &showAdvanced);
 
       if (showAdvanced) {
-        m_rebuildFroxels |= RemixGui::DragInt("Froxel Grid Resolution Scale", &froxelGridResolutionScaleObject(), 0.1f, 1);
-        m_rebuildFroxels |= RemixGui::DragInt("Froxel Depth Slices", &froxelDepthSlicesObject(), 0.1f, 1, UINT16_MAX);
-        RemixGui::DragInt("Max Accumulation Frames", &maxAccumulationFramesObject(), 0.1f, 1, UINT8_MAX);
-        RemixGui::DragFloat("Froxel Depth Slice Distribution Exponent", &froxelDepthSliceDistributionExponentObject(), 0.01f, 0.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-        RemixGui::DragFloat("Froxel Max Distance", &froxelMaxDistanceMetersObject(), 0.25f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-        RemixGui::DragFloat("Froxel Firefly Filtering Luminance Threshold", &froxelFireflyFilteringLuminanceThresholdObject(), 0.1f, 0.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-        RemixGui::Checkbox("Per-Portal Volumes", &enableInPortalsObject());
+        m_rebuildFroxels |= ImGui::DragInt("Froxel Grid Resolution Scale", &froxelGridResolutionScaleObject(), 0.1f, 1);
+        m_rebuildFroxels |= ImGui::DragInt("Froxel Depth Slices", &froxelDepthSlicesObject(), 0.1f, 1, UINT16_MAX);
+        ImGui::DragInt("Max Accumulation Frames", &maxAccumulationFramesObject(), 0.1f, 1, UINT8_MAX);
+        ImGui::DragFloat("Froxel Depth Slice Distribution Exponent", &froxelDepthSliceDistributionExponentObject(), 0.01f, 0.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::DragFloat("Froxel Max Distance", &froxelMaxDistanceMetersObject(), 0.25f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::DragFloat("Froxel Firefly Filtering Luminance Threshold", &froxelFireflyFilteringLuminanceThresholdObject(), 0.1f, 0.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::Checkbox("Per-Portal Volumes", &enableInPortalsObject());
 
-        RemixGui::Separator();
-        RemixGui::Checkbox("Enable Reference Mode", &enableReferenceModeObject());
-        RemixGui::Separator();
+        ImGui::Separator();
+        ImGui::Checkbox("Enable Reference Mode", &enableReferenceModeObject());
+        ImGui::Separator();
 
         ImGui::BeginDisabled(enableReferenceMode());
 
-        m_rebuildFroxels |= RemixGui::DragInt("Restir Grid Downsample Factor", &restirGridScaleObject(), 0.1f, 1);
-        m_rebuildFroxels |= RemixGui::DragInt("Restir Froxel Depth Slices", &restirFroxelDepthSlicesObject(), 0.1f, 1, UINT16_MAX);
-        RemixGui::DragFloat("Restir Guard Band Scale Factor", &restirGridGuardBandFactorObject(), 0.1f, 1.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        m_rebuildFroxels |= ImGui::DragInt("Restir Grid Downsample Factor", &restirGridScaleObject(), 0.1f, 1);
+        m_rebuildFroxels |= ImGui::DragInt("Restir Froxel Depth Slices", &restirFroxelDepthSlicesObject(), 0.1f, 1, UINT16_MAX);
+        ImGui::DragFloat("Restir Guard Band Scale Factor", &restirGridGuardBandFactorObject(), 0.1f, 1.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
-        RemixGui::DragInt("Initial RIS Sample Count", &initialRISSampleCountObject(), 0.05f, 1, UINT8_MAX);
-        RemixGui::Checkbox("Enable Initial Visibility", &enableInitialVisibilityObject());
+        ImGui::DragInt("Initial RIS Sample Count", &initialRISSampleCountObject(), 0.05f, 1, UINT8_MAX);
+        ImGui::Checkbox("Enable Initial Visibility", &enableInitialVisibilityObject());
         ImGui::BeginDisabled(!enableInitialVisibility());
-        RemixGui::Checkbox("Enable Visibility Reuse", &visibilityReuseObject());
+        ImGui::Checkbox("Enable Visibility Reuse", &visibilityReuseObject());
         ImGui::EndDisabled();
 
-        RemixGui::Checkbox("Enable Temporal Resampling", &enableTemporalResamplingObject());
+        ImGui::Checkbox("Enable Temporal Resampling", &enableTemporalResamplingObject());
         ImGui::BeginDisabled(!enableTemporalResampling());
-        RemixGui::DragInt("Temporal Resampling Max Sample Count", &temporalReuseMaxSampleCountObject(), 1.0f, 1, UINT16_MAX);
+        ImGui::DragInt("Temporal Resampling Max Sample Count", &temporalReuseMaxSampleCountObject(), 1.0f, 1, UINT16_MAX);
         ImGui::EndDisabled();
 
-        RemixGui::Separator();
+        ImGui::Separator();
 
-        RemixGui::Checkbox("Enable Spatial Resampling", &enableSpatialResamplingObject());
+        ImGui::Checkbox("Enable Spatial Resampling", &enableSpatialResamplingObject());
         ImGui::BeginDisabled(!enableSpatialResampling());
-        RemixGui::DragInt("Spatial Resampling Max Sample Count", &spatialReuseMaxSampleCountObject(), 1.0f, 1, UINT16_MAX);
-        RemixGui::DragFloat("Clamped Spatial Resampling Search Radius", &spatialReuseSamplingRadiusObject(), 0.01f, 0.0f, 10.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::DragInt("Spatial Resampling Max Sample Count", &spatialReuseMaxSampleCountObject(), 1.0f, 1, UINT16_MAX);
+        ImGui::DragFloat("Clamped Spatial Resampling Search Radius", &spatialReuseSamplingRadiusObject(), 0.01f, 0.0f, 10.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         ImGui::EndDisabled();
 
         ImGui::EndDisabled();
@@ -271,10 +287,10 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
-    if (RemixGui::CollapsingHeader("Volumetric Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Volumetric Lighting", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::Indent();
 
-      RemixGui::Checkbox("Enable Volumetric Lighting", &enableObject());
+      ImGui::Checkbox("Enable Volumetric Lighting", &enableObject());
       {
         ImGui::Indent();
         ImGui::BeginDisabled(!enable());
@@ -306,70 +322,69 @@ namespace dxvk {
           itemIndex = 0;
         }
 
-        RemixGui::Separator();
+        ImGui::Separator();
 
         static bool showAdvanced = false;
-        RemixGui::Checkbox("Show Advanced Material Options", &showAdvanced);
+        ImGui::Checkbox("Show Advanced Material Options", &showAdvanced);
 
         if (showAdvanced) {
-          RemixGui::DragFloat3("Transmittance Color", &transmittanceColorObject(), 0.01f, 0.0f, MaxTransmittanceValue, "%.3f");
-          RemixGui::DragFloat("Transmittance Measurement Distance", &transmittanceMeasurementDistanceMetersObject(), 0.25f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragFloat3("Single Scattering Albedo", &singleScatteringAlbedoObject(), 0.01f, 0.0f, 1.0f, "%.3f");
-          RemixGui::DragFloat("Anisotropy", &anisotropyObject(), 0.01f, -.99f, .99f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragFloat("Depth Offset", &depthOffsetObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat3("Transmittance Color", &transmittanceColorObject(), 0.01f, 0.0f, MaxTransmittanceValue, "%.3f");
+          ImGui::DragFloat("Transmittance Measurement Distance", &transmittanceMeasurementDistanceMetersObject(), 0.25f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat3("Single Scattering Albedo", &singleScatteringAlbedoObject(), 0.01f, 0.0f, 1.0f, "%.3f");
+          ImGui::DragFloat("Anisotropy", &anisotropyObject(), 0.01f, -.99f, .99f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat("Depth Offset", &depthOffsetObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
-          RemixGui::Separator();
+          ImGui::Separator();
 
-          RemixGui::Checkbox("Enable Heterogeneous Fog", &enableHeterogeneousFogObject());
+          ImGui::Checkbox("Enable Heterogeneous Fog", &enableHeterogeneousFogObject());
 
           ImGui::BeginDisabled(!enableHeterogeneousFog());
-          RemixGui::DragFloat("Noise Field Substep Size", &noiseFieldSubStepSizeMetersObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragInt("Noise Field Number of Octaves", &noiseFieldOctavesObject(), 0.05f, 1, 8);
-          RemixGui::DragFloat("Noise Field Time Scale", &noiseFieldTimeScaleObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragFloat("Noise Field Density Scale", &noiseFieldDensityScaleObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragFloat("Noise Field Density Exponent", &noiseFieldDensityExponentObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragFloat("Noise Field Initial Frequency", &noiseFieldInitialFrequencyPerMeterObject(), 0.01f, 0.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragFloat("Noise Field Lacunarity", &noiseFieldLacunarityObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragFloat("Noise Field Gain", &noiseFieldGainObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat("Noise Field Substep Size", &noiseFieldSubStepSizeMetersObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragInt("Noise Field Number of Octaves", &noiseFieldOctavesObject(), 0.05f, 1, 8);
+          ImGui::DragFloat("Noise Field Time Scale", &noiseFieldTimeScaleObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat("Noise Field Density Scale", &noiseFieldDensityScaleObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat("Noise Field Density Exponent", &noiseFieldDensityExponentObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat("Noise Field Initial Frequency", &noiseFieldInitialFrequencyPerMeterObject(), 0.01f, 0.0f, FLT_MAX, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat("Noise Field Lacunarity", &noiseFieldLacunarityObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat("Noise Field Gain", &noiseFieldGainObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
           ImGui::EndDisabled();
         }
 
-        RemixGui::Separator();
+        ImGui::Separator();
 
-        RemixGui::Checkbox("Atmosphere Enabled", &enableAtmosphereObject());
+        ImGui::Checkbox("Atmosphere Enabled", &enableAtmosphereObject());
         ImGui::Indent();
         ImGui::BeginDisabled(!enableAtmosphere());
         {
-          RemixGui::DragFloat("Planet Radius", &atmospherePlanetRadiusMetersObject(), 0.1f, -FLT_MAX, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::DragFloat("Height", &atmosphereHeightMetersObject(), 0.1f, -FLT_MAX, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-          RemixGui::Checkbox("Inverted", &atmosphereInvertedObject());
+          ImGui::DragFloat("Planet Radius", &atmospherePlanetRadiusMetersObject(), 0.1f, -FLT_MAX, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat("Height", &atmosphereHeightMetersObject(), 0.1f, -FLT_MAX, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::Checkbox("Inverted", &atmosphereInvertedObject());
           ImGui::EndDisabled();
         }
         ImGui::Unindent();
 
-        RemixGui::Separator();
-        RemixGui::Checkbox("Enable Legacy Fog Remapping", &enableFogRemapObject());
-        RemixGui::Separator();
+        ImGui::Separator();
+        ImGui::Checkbox("Enable Legacy Fog Remapping", &enableFogRemapObject());
+        ImGui::Separator();
 
         ImGui::BeginDisabled(!enableFogRemap());
         {
           ImGui::Indent();
 
-          RemixGui::Checkbox("Enable Fog Color Remapping", &enableFogColorRemapObject());
+          ImGui::Checkbox("Enable Fog Color Remapping", &enableFogColorRemapObject());
 
-          RemixGui::Checkbox("Enable Fog Max Distance Remapping", &enableFogMaxDistanceRemapObject());
+          ImGui::Checkbox("Enable Fog Max Distance Remapping", &enableFogMaxDistanceRemapObject());
 
           ImGui::BeginDisabled(!enableFogMaxDistanceRemap());
           {
-            // Use dynamic bounds to prevent min > max configurations
-            RemixGui::DragFloat("Legacy Max Distance Min", &fogRemapMaxDistanceMinMetersObject(), 0.25f, 0.0f, fogRemapMaxDistanceMaxMeters(), "%.2f", ImGuiSliderFlags_AlwaysClamp);
-            RemixGui::DragFloat("Legacy Max Distance Max", &fogRemapMaxDistanceMaxMetersObject(), 0.25f, fogRemapMaxDistanceMinMeters(), FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-            RemixGui::DragFloat("Remapped Transmittance Measurement Distance Min", &fogRemapTransmittanceMeasurementDistanceMinMetersObject(), 0.25f, 0.0f, fogRemapTransmittanceMeasurementDistanceMaxMeters(), "%.2f", ImGuiSliderFlags_AlwaysClamp);
-            RemixGui::DragFloat("Remapped Transmittance Measurement Distance Max", &fogRemapTransmittanceMeasurementDistanceMaxMetersObject(), 0.25f, fogRemapTransmittanceMeasurementDistanceMinMeters(), FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::DragFloat("Legacy Max Distance Min", &fogRemapMaxDistanceMinMetersObject(), 0.25f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::DragFloat("Legacy Max Distance Max", &fogRemapMaxDistanceMaxMetersObject(), 0.25f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::DragFloat("Remapped Transmittance Measurement Distance Min", &fogRemapTransmittanceMeasurementDistanceMinMetersObject(), 0.25f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::DragFloat("Remapped Transmittance Measurement Distance Max", &fogRemapTransmittanceMeasurementDistanceMaxMetersObject(), 0.25f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
           }
           ImGui::EndDisabled();
 
-          RemixGui::DragFloat("Color Multiscattering Scale", &fogRemapColorMultiscatteringScaleObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::DragFloat("Color Multiscattering Scale", &fogRemapColorMultiscatteringScaleObject(), 0.01f, 0.0f, FLT_MAX, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
           ImGui::Unindent();
         }
@@ -379,7 +394,7 @@ namespace dxvk {
         ImGui::Unindent();
       }
 
-      RemixGui::Separator();
+      ImGui::Separator();
       ImGui::Dummy({ 0, 4 });
       {
         ImGui::Indent();
@@ -472,9 +487,9 @@ namespace dxvk {
     float transmittanceMeasurementDistance = transmittanceMeasurementDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
     Vector3 multiScatteringEstimate = Vector3();
 
-    // Check if fog density is below the configurable threshold to determine if physical volumetrics should be used.
-    // This threshold was created specifically for Portal RTX's underwater fixed function fog.
-    const bool canUsePhysicalFog = shouldConvertToPhysicalFog(fogState, waterFogDensityThreshold());
+    // Todo: Make this configurable in the future as this threshold was created specifically for Portal RTX's underwater fixed function fog.
+    constexpr float waterFogDensityThrehold = 0.065f;
+    const bool canUsePhysicalFog = shouldConvertToPhysicalFog(fogState, waterFogDensityThrehold);
 
     if (
       enableFogRemap() &&
@@ -504,25 +519,16 @@ namespace dxvk {
           float fogRemapTransmittanceMeasurementDistanceMin { fogRemapTransmittanceMeasurementDistanceMinMeters() * RtxOptions::getMeterToWorldUnitScale() };
           float fogRemapTransmittanceMeasurementDistanceMax { fogRemapTransmittanceMeasurementDistanceMaxMeters() * RtxOptions::getMeterToWorldUnitScale() };
 
-          // Note: Ensure the mins and maxes are consistent with each other (swap if inverted).
-          if (fogRemapMaxDistanceMin > fogRemapMaxDistanceMax) {
-            std::swap(fogRemapMaxDistanceMin, fogRemapMaxDistanceMax);
-          }
-          if (fogRemapTransmittanceMeasurementDistanceMin > fogRemapTransmittanceMeasurementDistanceMax) {
-            std::swap(fogRemapTransmittanceMeasurementDistanceMin, fogRemapTransmittanceMeasurementDistanceMax);
-          }
+          // Note: Ensure the mins and maxes are consistent with eachother.
+          fogRemapMaxDistanceMax = std::max(fogRemapMaxDistanceMax, fogRemapMaxDistanceMin);
+          fogRemapTransmittanceMeasurementDistanceMax = std::max(fogRemapTransmittanceMeasurementDistanceMax, fogRemapTransmittanceMeasurementDistanceMin);
 
           float const maxDistanceRange { fogRemapMaxDistanceMax - fogRemapMaxDistanceMin };
           float const transmittanceMeasurementDistanceRange { fogRemapTransmittanceMeasurementDistanceMax - fogRemapTransmittanceMeasurementDistanceMin };
-          
-          // Handle zero range case (min == max) to avoid division by zero
-          float normalizedRange = 0.0f;
-          if (maxDistanceRange > 0.0f) {
-            // Todo: Scene scale stuff ignored for now because scene scale stuff is not actually functioning properly. Add back in if it's ever fixed.
-            // Note: Remap the end fog state distance into renderer units so that options can all be in renderer units (to be consistent with everything else).
-            // normalizedRange = (fogState.end * sceneScale() - fogRemapMaxDistanceMin) / maxDistanceRange;
-            normalizedRange = (fogState.end - fogRemapMaxDistanceMin) / maxDistanceRange;
-          }
+          // Todo: Scene scale stuff ignored for now because scene scale stuff is not actually functioning properly. Add back in if it's ever fixed.
+          // Note: Remap the end fog state distance into renderer units so that options can all be in renderer units (to be consistent with everything else).
+          // float const normalizedRange{ (fogState.end * sceneScale() - fogRemapMaxDistanceMin) / maxDistanceRange };
+          float const normalizedRange { (fogState.end - fogRemapMaxDistanceMin) / maxDistanceRange };
 
           transmittanceMeasurementDistance = normalizedRange * transmittanceMeasurementDistanceRange + fogRemapTransmittanceMeasurementDistanceMin;
         } else if (fogState.mode == D3DFOG_EXP || fogState.mode == D3DFOG_EXP2) {

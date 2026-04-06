@@ -20,6 +20,7 @@
 #include "d3d11_interfaces.h"
 #include "d3d11_interop.h"
 #include "d3d11_options.h"
+#include "d3d11_rtx.h"
 #include "d3d11_shader.h"
 #include "d3d11_state.h"
 #include "d3d11_util.h"
@@ -417,6 +418,18 @@ namespace dxvk {
       return &m_d3d11Options;
     }
 
+                void SetImmediateContextUsesRtx(bool usesRtx) {
+                        m_immediateContextUsesRtx = usesRtx;
+                }
+
+                bool UsesImmediateContextRtx() const {
+                        return m_immediateContextUsesRtx;
+                }
+
+                D3D11Rtx& RTX() {
+                        return m_rtx;
+                }
+
     D3D10Device* GetD3D10Interface() const {
       return m_d3d10Device;
     }
@@ -449,6 +462,8 @@ namespace dxvk {
     D3D11Initializer*               m_initializer = nullptr;
     D3D10Device*                    m_d3d10Device = nullptr;
     Com<D3D11ImmediateContext, false> m_context;
+        D3D11Rtx                        m_rtx;
+        bool                            m_immediateContextUsesRtx = false;
 
     D3D11StateObjectSet<D3D11BlendState>        m_bsStateObjects;
     D3D11StateObjectSet<D3D11DepthStencilState> m_dsStateObjects;

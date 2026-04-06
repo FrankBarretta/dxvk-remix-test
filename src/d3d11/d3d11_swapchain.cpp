@@ -2,7 +2,166 @@
 #include "d3d11_device.h"
 #include "d3d11_swapchain.h"
 
+#include <mutex>
+#include <unordered_map>
+
+#include "../dxvk/dxvk_objects.h"
+#include "../dxvk/imgui/dxvk_imgui.h"
+#include "../dxvk/rtx_render/rtx_option.h"
+#include "../dxvk/rtx_render/rtx_bridge_message_channel.h"
+#include "../util/util_string.h"
+
 namespace dxvk {
+
+  namespace {
+
+    struct D3D11WindowData {
+      bool unicode;
+      WNDPROC proc;
+      D3D11SwapChain* swapchain;
+    };
+
+    std::recursive_mutex g_d3d11WindowProcMapMutex;
+    std::unordered_map<HWND, D3D11WindowData> g_d3d11WindowProcMap;
+
+    template <typename T, typename J, typename ... Args>
+    auto CallCharsetFunction(T unicode, J ascii, bool isUnicode, Args... args) {
+      return isUnicode
+        ? unicode(args...)
+        : ascii(args...);
+    }
+
+    bool IsInputMessage(UINT message) {
+      switch (message) {
+        case WM_INPUT:
+        case WM_CHAR:
+        case WM_SYSCHAR:
+        case WM_UNICHAR:
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+        case WM_MOUSEMOVE:
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL:
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+        case WM_RBUTTONDBLCLK:
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
+        case WM_MBUTTONDBLCLK:
+        case WM_XBUTTONDOWN:
+        case WM_XBUTTONUP:
+        case WM_XBUTTONDBLCLK:
+          return true;
+        default:
+          return false;
+      }
+    }
+
+    LRESULT CALLBACK D3D11WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+
+    void ResetWindowProc(HWND window) {
+      std::lock_guard<std::recursive_mutex> lock(g_d3d11WindowProcMapMutex);
+
+      auto it = g_d3d11WindowProcMap.find(window);
+      if (it == g_d3d11WindowProcMap.end())
+        return;
+
+      auto proc = reinterpret_cast<WNDPROC>(
+        CallCharsetFunction(
+          GetWindowLongPtrW, GetWindowLongPtrA, it->second.unicode,
+          window, GWLP_WNDPROC));
+
+      if (proc == D3D11WindowProc && it->second.proc != nullptr) {
+        CallCharsetFunction(
+          SetWindowLongPtrW, SetWindowLongPtrA, it->second.unicode,
+          window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(it->second.proc));
+      }
+
+      g_d3d11WindowProcMap.erase(window);
+    }
+
+    void HookWindowProc(D3D11SwapChain* swapchain, HWND window) {
+      if (window == nullptr)
+        return;
+
+      std::lock_guard<std::recursive_mutex> lock(g_d3d11WindowProcMapMutex);
+
+      ResetWindowProc(window);
+
+      D3D11WindowData windowData;
+      windowData.unicode = IsWindowUnicode(window);
+      windowData.proc = reinterpret_cast<WNDPROC>(
+        CallCharsetFunction(
+          SetWindowLongPtrW, SetWindowLongPtrA, windowData.unicode,
+          window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(D3D11WindowProc)));
+      windowData.swapchain = swapchain;
+      g_d3d11WindowProcMap[window] = windowData;
+
+      Logger::info(str::format("D3D11: Hooked window proc for window ", window, ", previous proc=", reinterpret_cast<const void*>(windowData.proc)));
+
+      if (windowData.proc == nullptr) {
+        Logger::info(str::format("D3D11: No winproc detected, initiating bridge message channel for: ", window));
+
+        if (BridgeMessageChannel::get().init(window, D3D11WindowProc)) {
+          auto& gui = swapchain->GetDxvkDevice()->getCommon()->getImgui();
+          gui.switchMenu(RtxOptions::showUI(), true);
+        } else {
+          Logger::err("D3D11: Unable to init bridge message channel. Input capture may not work!");
+        }
+      }
+    }
+
+    LRESULT CALLBACK D3D11WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+      D3D11WindowData windowData = {};
+
+      {
+        std::lock_guard<std::recursive_mutex> lock(g_d3d11WindowProcMapMutex);
+
+        auto it = g_d3d11WindowProcMap.find(window);
+        if (it == g_d3d11WindowProcMap.end())
+          return 0;
+
+        windowData = it->second;
+      }
+
+      if (message == WM_DESTROY || message == WM_NCDESTROY)
+        ResetWindowProc(window);
+
+      if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN || message == WM_KEYUP || message == WM_SYSKEYUP) {
+        if (wParam == VK_MENU || wParam == 'X') {
+          Logger::info(str::format("D3D11WindowProc: key message=", message, ", vk=", wParam, ", hwnd=", window));
+        }
+      }
+
+      auto& gui = windowData.swapchain->GetDxvkDevice()->getCommon()->getImgui();
+      if (gui.isInit())
+        gui.wndProcHandler(window, message, wParam, lParam);
+
+      if (RtxOptions::showUI() != UIType::None
+       && RtxOptions::blockInputToGameInUI()
+       && IsInputMessage(message)) {
+        return 0;
+      }
+
+      if (windowData.proc != nullptr) {
+        const bool unicode = windowData.proc
+          ? windowData.unicode
+          : IsWindowUnicode(window);
+
+        return CallCharsetFunction(
+          CallWindowProcW, CallWindowProcA, unicode,
+          windowData.proc, window, message, wParam, lParam);
+      }
+
+      return 0;
+    }
+
+  }
 
   static uint16_t MapGammaControlPoint(float x) {
     if (x < 0.0f) x = 0.0f;
@@ -31,10 +190,14 @@ namespace dxvk {
     CreateBackBuffer();
     CreateBlitter();
     CreateHud();
+
+    HookWindowProc(this, m_window);
   }
 
 
   D3D11SwapChain::~D3D11SwapChain() {
+    ResetWindowProc(m_window);
+
     m_device->waitForSubmission(&m_presentStatus);
     m_device->waitForIdle();
     
@@ -260,8 +423,13 @@ namespace dxvk {
     Com<ID3D11DeviceContext> deviceContext = nullptr;
     m_parent->GetImmediateContext(&deviceContext);
 
-    // Flush pending rendering commands before
     auto immediateContext = static_cast<D3D11ImmediateContext*>(deviceContext.ptr());
+    m_parent->RTX().ResetScreenResolution(immediateContext,
+      std::max(m_desc.Width, 1u),
+      std::max(m_desc.Height, 1u));
+    m_parent->RTX().EndFrame(immediateContext, m_swapImage);
+
+    // Flush pending rendering commands before
     immediateContext->Flush();
 
     // Bump our frame id.
@@ -305,11 +473,21 @@ namespace dxvk {
 
       if (m_hud != nullptr)
         m_hud->render(m_context, info.format, info.imageExtent);
+
+      auto& gui = m_device->getCommon()->getImgui();
+      gui.render(m_window, m_context, info.format, info.imageExtent, m_vsync);
+
+      m_parent->RTX().OnPresent(immediateContext, m_imageViews.at(imageIndex)->image());
+
+      // The fallback DX11 path does not run the RTX context frame-end hook,
+      // so deferred UI option changes must be flushed here.
+      RtxOptionManager::applyPendingValuesOptionLayers();
+      RtxOptionManager::applyPendingValues(m_device.ptr());
       
       if (i + 1 >= SyncInterval)
         m_context->signal(m_frameLatencySignal, m_frameId);
 
-      SubmitPresent(immediateContext, sync, i);
+      SubmitPresent(immediateContext, sync, i, imageIndex);
     }
 
     SyncFrameLatency();
@@ -320,7 +498,8 @@ namespace dxvk {
   void D3D11SwapChain::SubmitPresent(
           D3D11ImmediateContext*  pContext,
     const vk::PresenterSync&      Sync,
-          uint32_t                FrameId) {
+        uint32_t                FrameId,
+        uint32_t                ImageIndex) {
     auto lock = pContext->LockContext();
 
     // Present from CS thread so that we don't
@@ -329,6 +508,7 @@ namespace dxvk {
 
     pContext->EmitCs([this,
       cFrameId     = FrameId,
+      cImageIndex  = ImageIndex,
       cSync        = Sync,
       cHud         = m_hud,
       cCommandList = m_context->endRecording()
@@ -337,9 +517,9 @@ namespace dxvk {
         cSync.acquire, cSync.present);
 
       if (cHud != nullptr && !cFrameId)
-        cHud->update();
+        cHud->update(1);
 
-      m_device->presentImage(m_presenter, &m_presentStatus);
+      m_device->presentImage(0u, false, cImageIndex, m_presenter, &m_presentStatus);
     });
 
     pContext->FlushCsChunk();

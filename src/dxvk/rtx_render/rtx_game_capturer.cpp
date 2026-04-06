@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2023-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -189,24 +189,15 @@ namespace dxvk {
     m_state.set<State::Capturing, true>();
     m_state.set<State::Initializing, false>();
     m_state.set<State::Complete, false>();
-    m_state.set<State::Failed, false>();
   }
   
   void GameCapturer::prepareInstanceStage(const Rc<DxvkContext> ctx) {
     const auto ogStagePathStr = buildStagePath(m_options.instanceStageName);
-    std::string stagePathStr;
-    if (RtxOptions::captureOverwriteExistingCapture()) {
-      if (std::filesystem::exists(ogStagePathStr)) {
-        std::filesystem::remove(ogStagePathStr);
-      }
-      stagePathStr = ogStagePathStr;
-    } else {
-      stagePathStr = env::dedupeFilename(ogStagePathStr);
-    }
-    const auto resolvedFileName = std::filesystem::path(stagePathStr).stem().string();
-    m_pCap->instance.stageName = resolvedFileName;
+    const auto stagePathStr = env::dedupeFilename(ogStagePathStr);
+    const auto dedupedFileName =  std::filesystem::path(stagePathStr).stem().string();
+    m_pCap->instance.stageName = dedupedFileName;
     m_pCap->instance.stagePath = stagePathStr;
-    m_exporter.generateSceneThumbnail(ctx, BASE_DIR + lss::commonDirName::thumbDir, resolvedFileName);
+    m_exporter.generateSceneThumbnail(ctx, BASE_DIR + lss::commonDirName::thumbDir, dedupedFileName);
   }
 
   void GameCapturer::capture(const Rc<DxvkContext> ctx, const float frameTimeMilliseconds) {
@@ -763,14 +754,8 @@ namespace dxvk {
                                           std::shared_ptr<Mesh> pMesh) {
 
     AssetExporter::BufferCallback captureMeshTexCoordsAsync = [ctx, geomData, currentFrameNum, pMesh](Rc<DxvkBuffer> texBuf) {
-      // Only float32 texcoord formats can be safely read as float* on the CPU.
-      // Non-float32 formats (e.g. R16G16_SFLOAT) are normally converted to R32G32_SFLOAT by the
-      // GPU interleaver before reaching here, but guard defensively in case that changes.
-      const VkFormat texFmt = geomData.texcoordBuffer.vertexFormat();
-      if (texFmt != VK_FORMAT_R32G32_SFLOAT && texFmt != VK_FORMAT_R32G32B32_SFLOAT && texFmt != VK_FORMAT_R32G32B32A32_SFLOAT) {
-        Logger::err(str::format("[GameCapturer] Skipping texcoord capture for unsupported format: ", texFmt));
-        return;
-      }
+      assert(geomData.texcoordBuffer.vertexFormat() == VK_FORMAT_R32G32_SFLOAT ||
+             geomData.texcoordBuffer.vertexFormat() == VK_FORMAT_R32G32B32_SFLOAT);
       // Prep helper vars
       const size_t numVertices = geomData.vertexCount;
       constexpr size_t texcoordSubElementSize = sizeof(float);
@@ -979,16 +964,8 @@ namespace dxvk {
       pState->set<State::Exporting, true>();
 
       Logger::info("[GameCapturer][" + cap.idStr + "] Begin USD export");
-      const bool exportOk = lss::GameExporter::exportUsd(exportPrep);
+      lss::GameExporter::exportUsd(exportPrep);
       Logger::info("[GameCapturer][" + cap.idStr + "] End USD export");
-
-      if (!exportOk) {
-        complete->stageName = cap.instance.stageName;
-        complete->stagePath = cap.instance.stagePath;
-        pState->set<State::Exporting, false>();
-        pState->set<State::Failed, true>();
-        return;
-      }
 
       // Necessary step for being able to properly diff and check for regressions
       const auto flattenCaptureEnvStr = env::getEnvVar("DXVK_CAPTURE_FLATTEN");
@@ -1052,8 +1029,8 @@ namespace dxvk {
     exportPrep.meta.bReduceMeshBuffers = true;
     exportPrep.meta.isZUp = RtxOptions::zUp();
     if (s_captureRemixConfigs) {
-      for (auto& pair : RtxOptionImpl::getGlobalOptionMap()) {
-        exportPrep.meta.renderingSettingsDict[pair.second->getFullName()] = pair.second->getResolvedValueAsString();
+      for (auto& pair : RtxOptionImpl::getGlobalRtxOptionMap()) {
+        exportPrep.meta.renderingSettingsDict[pair.second->getFullName()] = pair.second->genericValueToString(RtxOptionImpl::ValueType::Value);
       }
     }
     exportPrep.meta.bCorrectBakedTransforms = false;

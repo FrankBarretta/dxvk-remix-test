@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2021-2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -23,16 +23,12 @@
 
 #include "../util/config/config.h"
 
-#include <memory>
-
 #include "dxvk_adapter.h"
 #include "dxvk_device_filter.h"
 #include "dxvk_extension_provider.h"
 #include "dxvk_options.h"
 
 namespace dxvk {
-
-  struct DxvkDebugUtilsContext;
   
   /**
    * \brief DXVK instance
@@ -145,10 +141,6 @@ namespace dxvk {
     VkDebugUtilsMessengerEXT m_debugUtilsMessenger = nullptr;
     // NV-DXVK end
 
-    // NV-DXVK start: debug callback context (stack trace + duplicate filtering)
-    std::unique_ptr<DxvkDebugUtilsContext> m_debugUtilsContext;
-    // NV-DXVK end
-
     std::vector<DxvkExtensionProvider*> m_extProviders;
     std::vector<Rc<DxvkAdapter>> m_adapters;
     
@@ -158,6 +150,12 @@ namespace dxvk {
     
     static void logNameList(const DxvkNameList& names);
     
+    // NV-DXVK start: Custom config loading/logging
+    std::array<Config,Config::Type_kSize> m_confs;
+    void initConfigs();
+    template<Config::Type type>
+    void initConfig();
+    // NV-DXVK end 
   };
   
 }

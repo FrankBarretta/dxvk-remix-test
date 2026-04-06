@@ -72,7 +72,7 @@ struct DustParticleSystemConstants {
   float farH;
   float isCameraLhs;
   float anisotropy;
-  float sceneScale;
+  uint pad2;
 };
 
 // Inputs

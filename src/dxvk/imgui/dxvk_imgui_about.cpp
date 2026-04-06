@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2022-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2022-2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -28,13 +28,15 @@
 #include "dxvk_context.h"
 #include "dxvk_objects.h"
 #include "rtx_render/rtx_scene_manager.h"
-#include "rtx_render/rtx_imgui.h"
 
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace dxvk {
+  constexpr ImGuiTreeNodeFlags collapsingHeaderClosedFlags = ImGuiTreeNodeFlags_CollapsingHeader;
+  constexpr ImGuiTreeNodeFlags collapsingHeaderFlags = collapsingHeaderClosedFlags | ImGuiTreeNodeFlags_DefaultOpen;
+
   void ImGuiAbout::update(const Rc<DxvkContext>& ctx) {
     m_secrets.update(ctx);
   }
@@ -68,18 +70,18 @@ namespace dxvk {
 
     // Remix Credits
 
-    if (RemixGui::CollapsingHeader("Credits", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Credits", collapsingHeaderFlags)) {
       ImGui::TextUnformatted("Produced by NVIDIA Lightspeed Studios");
       ImGui::TextUnformatted("Based on the DXVK project");
 
-      RemixGui::Separator();
+      ImGui::Separator();
 
       m_credits.show();
     }
 
     // Secret Code Section
 
-    if (RemixGui::CollapsingHeader("Secrets")) {
+    if (ImGui::CollapsingHeader("Secrets", collapsingHeaderClosedFlags)) {
       m_secrets.show(ctx);
     }
 
@@ -90,13 +92,11 @@ namespace dxvk {
     : m_sections({
       { "Github Contributors", // Sorted alphabetically by last name
         { "Lorenzo 'King Vulpes' Acevedo IV",
-          "Quinn 'Binq Adams' Baddams",
           "Samuel 'CR' Bowman'",
           "Alexis 'Sortifal' Bruneteau",
           "Ethan 'Xenthio' Cardwell",
           "Alexander 'xoxor4d' Engel",
           "James Horsley 'mmdanggg2'",
-          "Kim 'Kim2091'",
           "Leonardo Leotte",
           "Jeffrey 'skurtyyskirts' Munoz",
           "Nico Rodrigues-McKenna",
@@ -107,7 +107,6 @@ namespace dxvk {
           "Basil 'EliteCombineSoldier'"}},
       { "Engineering",
         { "Riley Alston",
-          "Carlos Anguiano",
           "Xiangshun Bei",
           "Damien Bataille",
           "Sam Bourne",
@@ -118,22 +117,17 @@ namespace dxvk {
           "Mark Henderson",
           "Alexander Jaus",
           "Nicolas Kendall-Bar",
-          "Emanuel Kozerski",
           "Peter Kristof",
           "Zachary Kupu",
           "Ed Leafe",
           "Lindsay Lutz",
           "Dmitriy Marshak",
-          "Luis Mendez",
-          "Eugenio Naselli",
           "Yaobin Ouyang",
           "Alexey Panteleev",
           "Jerran Schmidt",
           "Sascha Sertel",
-          "Jeremy Shopf",
           "Nuno Subtil",
           "Ilya Terentiev",
-          "Peter Thacker",
           "Sunny Thakkar",
           "Pierre-Olivier Trottier",
           "Sultim Tsyrendashiev",
@@ -162,7 +156,6 @@ namespace dxvk {
           "Oleksii Tronchuk"}},
       { "Production",
         { "Kelsey Blanton",
-          "David Driver-Gomm",
           "Wendy Gram",
           "Jaakko Haapasalo",
           "Nyle Usmani"}},
@@ -252,10 +245,10 @@ namespace dxvk {
     for (auto& [header, secrets] : m_organizedSecrets) {
       if (m_visibleHeaders[header]) {
         ImGui::Indent();
-        if (RemixGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader(header.c_str(), collapsingHeaderFlags)) {
           for (auto& secret : secrets) {
             if (secret.bUnlocked) {
-              if(RemixGui::Checkbox(secret.replacement.name.c_str(), &secret.bEnabled)) {
+              if(ImGui::Checkbox(secret.replacement.name.c_str(), &secret.bEnabled)) {
                 if(secret.bEnabled && secret.replacement.bExclusiveReplacement) {
                   for(auto* const pOtherSecret : m_assetHashesToSecretPtrs[secret.replacement.assetHash]) {
                     pOtherSecret->bEnabled = (&secret == pOtherSecret);

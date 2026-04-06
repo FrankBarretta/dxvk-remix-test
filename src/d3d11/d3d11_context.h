@@ -17,11 +17,13 @@
 namespace dxvk {
   
   class D3D11Device;
+        struct D3D11Rtx;
   
   class D3D11DeviceContext : public D3D11DeviceChild<ID3D11DeviceContext4> {
     friend class D3D11DeviceContextExt;
     // Needed in order to call EmitCs for pushing markers
     friend class D3D11UserDefinedAnnotation;
+                friend struct D3D11Rtx;
 
     constexpr static VkDeviceSize StagingBufferSize = 4ull << 20;
   public:

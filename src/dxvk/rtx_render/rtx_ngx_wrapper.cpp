@@ -22,8 +22,8 @@
 
 #define WIN32_NO_STATUS
 #include <windows.h>
-#include <ntstatus.h>
 #undef WIN32_NO_STATUS
+#include <ntstatus.h>
 #include <Winternl.h>
 #include <d3dkmthk.h>
 #include <d3dkmdt.h>

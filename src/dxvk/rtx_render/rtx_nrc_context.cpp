@@ -116,8 +116,8 @@ namespace dxvk {
     }
   }
 
-  NrcContext::NrcContext(DxvkDevice& device, const Configuration& config)
-    : CommonDeviceObject(&device), m_isDebugBufferRequired(config.debugBufferIsRequired) {
+  NrcContext::NrcContext(DxvkDevice& device)
+    : CommonDeviceObject(&device) {
   }
 
   NrcContext::~NrcContext() {
@@ -226,7 +226,6 @@ namespace dxvk {
   }
 
   nrc::Status NrcContext::initialize() {
-    
     m_nrcContextSettings = nrc::ContextSettings {};
 
     nrc::GlobalSettings globalSettings;
@@ -245,7 +244,8 @@ namespace dxvk {
     globalSettings.enableGPUMemoryAllocation = false;
 
     // Only enable debug buffers in development and not production
-    globalSettings.enableDebugBuffers = m_isDebugBufferRequired;
+    globalSettings.enableDebugBuffers = NrcCtxOptions::enableDebugBuffers();
+
     globalSettings.maxNumFramesInFlight = kMaxFramesInFlight;
 
     globalSettings.depsDirectoryPath = !NrcCtxOptions::cudaDllDepsDirectoryPath().empty() ? NrcCtxOptions::cudaDllDepsDirectoryPath().c_str() : nullptr;
@@ -339,7 +339,7 @@ namespace dxvk {
         clearBuffer(ctx, nrc::BufferIdx::TrainingRadianceParams, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_SHADER_WRITE_BIT);
         clearBuffer(ctx, nrc::BufferIdx::QueryRadiance, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_SHADER_WRITE_BIT);
         clearBuffer(ctx, nrc::BufferIdx::QueryRadianceParams, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_SHADER_WRITE_BIT);
-        if (isDebugBufferRequired()) {
+        if (NrcCtxOptions::enableDebugBuffers()) {
           clearBuffer(ctx, nrc::BufferIdx::DebugTrainingPathInfo, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
         }
       }
@@ -439,10 +439,6 @@ namespace dxvk {
     }
   }
 
-  bool NrcContext::isDebugBufferRequired() const     {
-    return m_isDebugBufferRequired;
-  }
-
   VkDeviceSize NrcContext::getCurrentMemoryConsumption() const {
     VkDeviceSize totalAllocatedMemory = 0;
 
@@ -476,7 +472,7 @@ namespace dxvk {
     }
 
     // Set up buffer create info
-    DxvkBufferCreateInfo bufferCreateInfo;
+    DxvkBufferCreateInfo bufferCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     {
       bufferCreateInfo.usage = m_nrcContext->GetBufferUsageFlags(allocationInfo);
       bufferCreateInfo.stages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;   // ToDo - should narrow it down?

@@ -1109,7 +1109,7 @@ namespace dxvk {
       : 0;
     
     uint32_t resAlign = isStructured
-      ? (resStride & -resStride)
+      ? (resStride & (~resStride + 1u))
       : 16;
     
     // Compute the DXVK binding slot index for the resource.

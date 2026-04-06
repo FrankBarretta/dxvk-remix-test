@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2023-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -87,9 +87,9 @@ namespace dxvk {
                "The scale factor to divide the x and y froxel grid resolution by to determine the x and y dimensions of the ReSTIR froxel grid.\n"
                "Note that unlike the rtx.volumetrics.froxelGridResolutionScale option this is not dividing the render resolution, but rather is a scalar on top of the resulting froxel grid resolution after it is divided by the resolution scale.");
     RTX_OPTION_ARGS("rtx.volumetrics", uint32_t, froxelGridResolutionScale, 8, "The scale factor to divide the x and y render resolution by to determine the x and y dimensions of the froxel grid.",
-                    args.minValue = static_cast<uint32_t>(1), args.flags = RtxOptionFlags::UserSetting);
+                    args.minValue = static_cast<uint32_t>(1));
     RTX_OPTION_ARGS("rtx.volumetrics", uint16_t, froxelDepthSlices, 64, "The z dimension of the froxel grid. Must be constant after initialization.",
-                    args.minValue = static_cast<uint16_t>(1), args.maxValue = std::numeric_limits<uint16_t>::max(), args.flags = RtxOptionFlags::UserSetting);
+                    args.minValue = static_cast<uint16_t>(1), args.maxValue = std::numeric_limits<uint16_t>::max());
     RTX_OPTION_ARGS("rtx.volumetrics", uint16_t, restirFroxelDepthSlices, 128, "The z dimension of the ReSTIR froxel grid. Must be constant after initialization.",
                     args.minValue = static_cast<uint16_t>(1), args.maxValue = std::numeric_limits<uint16_t>::max());
     RTX_OPTION_ARGS("rtx.volumetrics", uint8_t, maxAccumulationFrames, 128,
@@ -125,20 +125,17 @@ namespace dxvk {
     RTX_OPTION("rtx.volumetrics", uint16_t, spatialReuseMaxSampleCount, 8, "The number of spatial samples to perform, generally higher is better, but the law of diminishing returns applies.");
     RTX_OPTION("rtx.volumetrics", float, spatialReuseSamplingRadius, 0.8f, "Search radius (in froxels) to search for neighbour candidates in spatial reuse pass.");
     RTX_OPTION_FLAG("rtx.volumetrics", bool, enableReferenceMode, false, RtxOptionFlags::NoSave, "Enables reference mode for volumetrics.  This is very expensive, but allows for rendering engineers to test how close sampling approximations are to the real thing. This will not save.");
-    RTX_OPTION_ARGS("rtx.volumetrics", bool, enable, true,
+    RTX_OPTION("rtx.volumetrics", bool, enable, true,
                "Enabling volumetric lighting provides higher quality ray traced physical volumetrics, disabling falls back to cheaper depth based fog.\n"
-               "Note that disabling this option does not disable the froxel radiance cache as a whole as it is still needed for other non-volumetric lighting approximations.",
-               args.flags = RtxOptionFlags::UserSetting);
-    RTX_OPTION_ARGS("rtx.volumetrics", Vector3, transmittanceColor, Vector3(0.999f, 0.999f, 0.999f),
+               "Note that disabling this option does not disable the froxel radiance cache as a whole as it is still needed for other non-volumetric lighting approximations.");
+    RTX_OPTION("rtx.volumetrics", Vector3, transmittanceColor, Vector3(0.999f, 0.999f, 0.999f),
                "The color to use for calculating transmittance measured at a specific distance.\n"
-               "Note that this color is assumed to be in sRGB space and gamma encoded as it will be converted to linear for use in volumetrics.",
-               args.minValue = Vector3(0.0f, 0.0f, 0.0f), args.maxValue = Vector3(1.0f, 1.0f, 1.0f));
+               "Note that this color is assumed to be in sRGB space and gamma encoded as it will be converted to linear for use in volumetrics.");
     RTX_OPTION_ARGS("rtx.volumetrics", float, transmittanceMeasurementDistanceMeters, 200.0f, "The distance the specified transmittance color was measured at. Lower distances indicate a denser medium.  The unit of measurement is meters, respects scene scale.",
                     args.minValue = 0.0f);
-    RTX_OPTION_ARGS("rtx.volumetrics", Vector3, singleScatteringAlbedo, Vector3(0.999f, 0.999f, 0.999f),
+    RTX_OPTION("rtx.volumetrics", Vector3, singleScatteringAlbedo, Vector3(0.999f, 0.999f, 0.999f),
                "The single scattering albedo (otherwise known as the particle albedo) representing the ratio of scattering to absorption.\n"
-               "While color-like in many ways this value is assumed to be more of a mathematical albedo (unlike material albedo which is treated more as a color), and is therefore treated as linearly encoded data (not gamma).",
-               args.minValue = Vector3(0.0f, 0.0f, 0.0f), args.maxValue = Vector3(1.0f, 1.0f, 1.0f));
+               "While color-like in many ways this value is assumed to be more of a mathematical albedo (unlike material albedo which is treated more as a color), and is therefore treated as linearly encoded data (not gamma).");
     RTX_OPTION_ARGS("rtx.volumetrics", float, anisotropy, 0.0f, "The anisotropy of the scattering phase function (-1 being backscattering, 0 being isotropic, 1 being forward scattering).",
                     args.minValue = -1.0f, args.maxValue = 1.0f);
     RTX_OPTION("rtx.volumetrics", bool, enableInPortals, false,
@@ -196,10 +193,6 @@ namespace dxvk {
                "A flag to enable or disable remapping fixed function fox's max distance. Only takes effect when fog remapping in general is enabled.\n"
                "Enables or disables remapping functionality relating to the max distance parameter of fixed function fog.\n"
                "This allows dynamic changes to the game's fog max distance to be reflected somewhat in the volumetrics system. Overrides the specified volumetric transmittance measurement distance.");
-    RTX_OPTION("rtx.volumetrics", float, waterFogDensityThreshold, 0.065f,
-               "The fog density threshold for determining when to use physical volumetrics vs fixed function fog.\n"
-               "Values below this threshold will use physical volumetrics, while values above will fall back to fixed function fog.\n"
-               "This threshold was created specifically for Portal RTX's underwater fixed function fog.");
     RTX_OPTION_ARGS("rtx.volumetrics", float, fogRemapMaxDistanceMinMeters, 1.0f,
                "A value controlling the \"max distance\" fixed function fog parameter's minimum remapping bound.\n"
                "Note that fog remapping and fog max distance remapping must be enabled for this setting to have any effect.  In meters.",

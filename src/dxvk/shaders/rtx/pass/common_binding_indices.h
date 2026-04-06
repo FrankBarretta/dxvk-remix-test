@@ -31,37 +31,29 @@
 #define BINDING_ACCELERATION_STRUCTURE           0
 #define BINDING_ACCELERATION_STRUCTURE_PREVIOUS  1
 #define BINDING_ACCELERATION_STRUCTURE_UNORDERED 2
-#define BINDING_ACCELERATION_STRUCTURE_SSS       3
-#define BINDING_SURFACE_DATA_BUFFER              4
-#define BINDING_SURFACE_MAPPING_BUFFER           5
-#define BINDING_SURFACE_MATERIAL_DATA_BUFFER     6
-#define BINDING_SURFACE_MATERIAL_EXT_DATA_BUFFER 7
-#define BINDING_VOLUME_MATERIAL_DATA_BUFFER      8
-#define BINDING_LIGHT_DATA_BUFFER                9
-#define BINDING_PREVIOUS_LIGHT_DATA_BUFFER       10
-#define BINDING_LIGHT_MAPPING                    11
-#define BINDING_BILLBOARDS_BUFFER                12
-#define BINDING_BLUE_NOISE_TEXTURE               13
-#define BINDING_BINDLESS_INDICES_BUFFER          14
-#define BINDING_CONSTANTS                        15
-#define BINDING_DEBUG_VIEW_TEXTURE               16
-#define BINDING_GPU_PRINT_BUFFER                 17
-#define BINDING_VALUE_NOISE_SAMPLER              18
-#define BINDING_SAMPLER_READBACK_BUFFER          19
+#define BINDING_SURFACE_DATA_BUFFER              3
+#define BINDING_SURFACE_MAPPING_BUFFER           4
+#define BINDING_SURFACE_MATERIAL_DATA_BUFFER     5
+#define BINDING_SURFACE_MATERIAL_EXT_DATA_BUFFER 6
+#define BINDING_VOLUME_MATERIAL_DATA_BUFFER      7
+#define BINDING_LIGHT_DATA_BUFFER                8
+#define BINDING_PREVIOUS_LIGHT_DATA_BUFFER       9
+#define BINDING_LIGHT_MAPPING                    10
+#define BINDING_BILLBOARDS_BUFFER                11
+#define BINDING_BLUE_NOISE_TEXTURE               12
+#define BINDING_BINDLESS_INDICES_BUFFER          13
+#define BINDING_CONSTANTS                        14
+#define BINDING_DEBUG_VIEW_TEXTURE               15
+#define BINDING_GPU_PRINT_BUFFER                 16
+#define BINDING_VALUE_NOISE_SAMPLER              17
+#define BINDING_SAMPLER_READBACK_BUFFER          18
 
 #define COMMON_MAX_BINDING                       BINDING_SAMPLER_READBACK_BUFFER
 #define COMMON_NUM_BINDINGS                      (COMMON_MAX_BINDING + 1)
 
-// Note: Used to represent a non-existent buffer
+// Note: Used to represent a non-existent buffer and material index in the Surface,
+// as well as texture index in the Surface Material.
 #define BINDING_INDEX_INVALID uint16_t(0xFFFF)
-
-// Sentinel for an invalid surface index.  Equals the 21-bit maximum (SURFACE_INDEX_MAX_VALUE
-// from instance_definitions.h) so that it fits inside the packed RayInteraction._surfaceAndFlags
-// field.  The surfaceMapping buffer returns int32_t(-1) for unmapped surfaces; the 21-bit
-// property setter truncates 0xFFFFFFFF to 0x1FFFFF automatically.
-// This reserves the highest representable surface index as "invalid", reducing the usable
-// range by one (max usable index = SURFACE_INDEX_MAX_VALUE - 1 = 2,097,150).
-#define SURFACE_INDEX_INVALID 0x001FFFFFu
 
 #define SAMPLER_FEEDBACK_INVALID           uint16_t(0xFFFF)
 #define SAMPLER_FEEDBACK_MAX_TEXTURE_COUNT uint16_t(0xFFFF)
@@ -76,7 +68,6 @@
   ACCELERATION_STRUCTURE(BINDING_ACCELERATION_STRUCTURE)            \
   ACCELERATION_STRUCTURE(BINDING_ACCELERATION_STRUCTURE_UNORDERED)  \
   ACCELERATION_STRUCTURE(BINDING_ACCELERATION_STRUCTURE_PREVIOUS)   \
-  ACCELERATION_STRUCTURE(BINDING_ACCELERATION_STRUCTURE_SSS)        \
   STRUCTURED_BUFFER(BINDING_SURFACE_DATA_BUFFER)                    \
   STRUCTURED_BUFFER(BINDING_SURFACE_MAPPING_BUFFER)                 \
   STRUCTURED_BUFFER(BINDING_SURFACE_MATERIAL_DATA_BUFFER)           \

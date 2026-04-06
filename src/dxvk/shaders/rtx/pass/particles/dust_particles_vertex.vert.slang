@@ -43,8 +43,6 @@ struct VsOut
 
 static RNG rng;
 
-// Solve the roots of the cubic polynomial that maps the UVW coordinate uniformly across the frustum
-//  using Cardano's method: https://stackoverflow.com/questions/11064595/uniformly-distributed-random-point-inside-a-frustum
 float3 randomWorldPointInFrustum()
 {
   float3 random01 = float3(getNextSampleBlueNoise(rng), getNextSampleBlueNoise(rng), getNextSampleBlueNoise(rng)) * float3(2..xx, 1.f) - float3(1..xx, 0.f);
@@ -54,9 +52,7 @@ float3 randomWorldPointInFrustum()
   float r = random01.z * particleCb.frustumAreaAtZ;
   
   float part1 = particleCb.frustumB * (particleCb.frustumB * particleCb.frustumB - 6 * particleCb.frustumA * particleCb.frustumC) - 12 * particleCb.frustumA * particleCb.frustumA * r;
-
-  // Guard against negative sqrt argument when frustumDet > 0 and |part1| < frustumDet^(3/2) This is the three real roots case where Cardano's real-arithmetic form breaks down
-  float part2 = sqrt(max(0.0f, part1 * part1 - particleCb.frustumDet * particleCb.frustumDet * particleCb.frustumDet));
+  float part2 = sqrt(part1 * part1 - particleCb.frustumDet * particleCb.frustumDet * particleCb.frustumDet);
   
   if (part1 < 0.0f)
   {
@@ -66,13 +62,13 @@ float3 randomWorldPointInFrustum()
   float part3 = part1 + part2;
   part3 = (part3 < 0.0f) ? -pow(-part3, (1.f / 3)) : pow(part3, (1.f / 3));
   
-  float z = -(particleCb.frustumB + particleCb.frustumDet / part3 + part3) / (2 * particleCb.frustumA);
+  float z = (particleCb.frustumB + particleCb.frustumDet / part3 + part3) / (2 * particleCb.frustumA);
   
   float3 viewPos = float3(lerp(particleCb.nearW, particleCb.farW, abs(z/particleCb.frustumDepth)) * random01.x, 
                           lerp(particleCb.nearH, particleCb.farH, abs(z/particleCb.frustumDepth)) * random01.y, 
                           z + particleCb.frustumMin);
   
-  if(!particleCb.isCameraLhs)
+  if(particleCb.isCameraLhs)
   {
     viewPos.z = -viewPos.z;
   }
@@ -84,11 +80,8 @@ float3 randomWorldPointInFrustum()
 GpuDustParticle respawn()
 {
   GpuDustParticle newParticle;
-
   float3 random01 = float3(getNextSampleBlueNoise(rng), getNextSampleBlueNoise(rng), getNextSampleBlueNoise(rng)) * float3(2..xx, 1.f) - float3(1..xx, 0.f);
-
-  // Add an additional random offset to hide the quantization in the blue noise generator currently used in randomWorldPointInFrustum(). 
-  newParticle.position = randomWorldPointInFrustum() + random01 * 100 * particleCb.sceneScale;
+  newParticle.position = randomWorldPointInFrustum() + random01 * 100;
   newParticle.initialTimeToLive = newParticle.timeToLive = lerp(particleCb.minTtl, particleCb.maxTtl, getNextSampleBlueNoise(rng));
   newParticle.velocity = (float3(getNextSampleBlueNoise(rng), getNextSampleBlueNoise(rng), getNextSampleBlueNoise(rng)) * 2 - 1) * 40;
   newParticle.size = lerp(particleCb.minParticleSize, particleCb.maxParticleSize, pow(getNextSampleBlueNoise(rng), 2));
@@ -127,9 +120,7 @@ float3 calculateRadiance(GpuDustParticle particle)
 [shader("vertex")]
 VsOut main(uint vertexIdx : SV_VertexID)
 {
-  // Seed RNG with full vertex index range to avoid collisions with large particle counts
-  // The sampleOffset ensures unique sequences per particle.
-  rng = createRNG(uvec2(vertexIdx & 0xFFFF, vertexIdx >> 16), cb.frameIdx, vertexIdx);
+  rng = createRNG(float2(vertexIdx / 256, vertexIdx % 256), cb.frameIdx + vertexIdx/(256 * 256));
   
   GpuDustParticle particle = Particles[vertexIdx];
   
@@ -154,7 +145,7 @@ VsOut main(uint vertexIdx : SV_VertexID)
   particle.timeToLive -= particleCb.deltaTimeSecs;
   
   Particles[vertexIdx] = particle;
-
+  
   float4 viewPos = mul(cb.camera.worldToView, float4(particle.position, 1.f));
   float4 projPos = mul(cb.camera.viewToProjection, viewPos);
   

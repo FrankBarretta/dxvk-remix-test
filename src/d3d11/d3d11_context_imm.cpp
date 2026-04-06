@@ -2,6 +2,7 @@
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
 #include "d3d11_texture.h"
+#include "d3d11_trace.h"
 
 constexpr static uint32_t MinFlushIntervalUs = 750;
 constexpr static uint32_t IncFlushIntervalUs = 250;
@@ -10,13 +11,39 @@ constexpr static uint32_t MaxPendingSubmits  = 6;
 constexpr static VkDeviceSize MaxImplicitDiscardSize = 256ull << 10;
 
 namespace dxvk {
+
+  namespace {
+
+    Rc<DxvkContext> CreateImmediateContextExecutionContext(
+      D3D11Device*            parent,
+      const Rc<DxvkDevice>&   device) {
+      if (parent->GetOptions()->enableRemix
+       && parent->GetOptions()->useRtxContext) {
+        parent->SetImmediateContextUsesRtx(true);
+        D3D11EarlyTrace("D3D11ImmediateContext using RTX context for experimental DX11 Remix path");
+        return static_cast<Rc<DxvkContext>>(device->createRtxContext());
+      }
+
+      if (parent->GetOptions()->enableRemix) {
+        parent->SetImmediateContextUsesRtx(false);
+        D3D11EarlyTrace("D3D11ImmediateContext using standard DXVK context for experimental DX11 Remix path");
+      } else {
+        parent->SetImmediateContextUsesRtx(false);
+        D3D11EarlyTrace("D3D11ImmediateContext using standard DXVK context");
+      }
+
+      return device->createContext();
+    }
+
+  }
   
   D3D11ImmediateContext::D3D11ImmediateContext(
           D3D11Device*    pParent,
     const Rc<DxvkDevice>& Device)
   : D3D11DeviceContext(pParent, Device, DxvkCsChunkFlag::SingleUse),
-    m_csThread(Device, Device->createContext()),
+    m_csThread(Device, CreateImmediateContextExecutionContext(pParent, Device)),
     m_videoContext(this, Device) {
+    D3D11EarlyTrace("D3D11ImmediateContext ctor begin");
     EmitCs([
       cDevice                 = m_device,
       cRelaxedBarriers        = pParent->GetOptions()->relaxedBarriers,
@@ -34,8 +61,10 @@ namespace dxvk {
 
       ctx->setBarrierControl(barrierControl);
     });
+    D3D11EarlyTrace("D3D11ImmediateContext ctor after EmitCs");
     
     ClearState();
+    D3D11EarlyTrace("D3D11ImmediateContext ctor complete");
   }
   
   

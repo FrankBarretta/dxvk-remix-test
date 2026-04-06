@@ -23,7 +23,6 @@
 #include "rtx_utils.h"
 #include "rtx_options.h"
 #include "rtx_asset_package.h"
-#include "rtx_file_watch.h"
 #include "rtx_io.h"
 #include "dxvk_scoped_annotation.h"
 #include <gli/gli.hpp>
@@ -279,11 +278,8 @@ namespace dxvk {
         return nullptr;
       }
       if (!m_hFile) {
-        // NOTE: relaxing the share mode from 0 (no sharing) to FILE_SHARE_READ,
-        //       so that other CreateFile calls in this process and other processes can still open it for reading;
-        //       see the table in https://learn.microsoft.com/en-us/windows/win32/fileio/creating-and-opening-files
         HANDLE hFile = CreateFile(m_filename.c_str(),
-                                  GENERIC_READ, FILE_SHARE_READ, NULL,
+                                  GENERIC_READ, 0, NULL,
                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile == INVALID_HANDLE_VALUE) {
           ONCE(Logger::warn(str::format("CreateFile fail (error=", GetLastError(), "): ", m_filename)));
@@ -521,7 +517,6 @@ namespace dxvk {
   }
 
   AssetDataManager::~AssetDataManager() {
-    FileWatch::get().removeAllWatchDirs();
   }
 
   void AssetDataManager::addSearchPath(uint32_t priority, const std::filesystem::path& path) {
@@ -568,11 +563,9 @@ namespace dxvk {
       m_packageSets.emplace(std::piecewise_construct, std::forward_as_tuple(priority),
         std::forward_as_tuple(searchPath, std::move(packageSet)));
     }
-
-    FileWatch::get().installDir(searchPath.c_str());
   }
 
-  Rc<AssetData> AssetDataManager::findAsset(const std::string& filename, bool allowOnlyPartialDdsLoader) {
+  Rc<AssetData> AssetDataManager::findAsset(const std::string& filename) {
     ScopedCpuProfileZone();
 
     const char* extension = strrchr(filename.c_str(), '.');
@@ -595,14 +588,6 @@ namespace dxvk {
       if (dds->load(filename)) {
         return dds;
       }
-    }
-
-    // NOTE: 'allowOnlyPartialDdsLoader' can be set to true,
-    //       if a raw file is required for file streaming.
-    // NOTE: GliTextureData fully loads a file into RAM,
-    //       so it's better to avoid it for texture streaming
-    if (allowOnlyPartialDdsLoader) {
-      return nullptr;
     }
 
     if (RtxIo::enabled() && !m_packageSets.empty()) {

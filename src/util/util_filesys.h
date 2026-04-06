@@ -51,7 +51,7 @@ private:
   using fspath = std::filesystem::path;
   template<typename... PathParts>
   static inline fspath join(PathParts... pathParts) {
-    return std::filesystem::absolute((fspath(pathParts) / ...));
+    return (fspath(pathParts) / ...);
   }
   struct PathSpec {
     Id id;
@@ -71,6 +71,9 @@ private:
 
 public:
   static void init(const std::string rootPath);
+  static inline bool isInitialized() {
+    return s_bInit;
+  }
   static inline const fspath path(const Id id) {
     assert(s_bInit && "[RtxFileSys] Not yet init.");
     return s_paths[id];

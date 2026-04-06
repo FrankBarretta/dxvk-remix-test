@@ -31,6 +31,7 @@
 #include "rtx_io.h"
 #include "dxvk_raytracing.h"
 #include "rtx_debug_view.h"
+#include "../dxvk_early_trace.h"
 
 namespace dxvk {
   RtxInitializer::RtxInitializer(DxvkDevice* device)
@@ -38,15 +39,24 @@ namespace dxvk {
   }
 
   void RtxInitializer::initialize() {
+    DxvkEarlyTrace("RtxInitializer::initialize begin");
     ShaderManager::getInstance()->setDevice(m_device);
+    DxvkEarlyTrace("RtxInitializer::initialize shader manager device set");
 
 #ifdef WITH_RTXIO
     if (RtxIo::enabled()) {
+      DxvkEarlyTrace("RtxInitializer::initialize RTXIO init begin");
       RtxIo::get().initialize(m_device);
+      DxvkEarlyTrace("RtxInitializer::initialize RTXIO init complete");
     }
     // start async before starting asset loading
     DxvkObjects* pCommon = m_device->getCommon();
+    DxvkEarlyTrace("RtxInitializer::initialize got common objects");
     pCommon->getTextureManager().startAsync();
+    DxvkEarlyTrace("RtxInitializer::initialize texture manager async started");
+#else
+    DxvkObjects* pCommon = m_device->getCommon();
+    DxvkEarlyTrace("RtxInitializer::initialize got common objects");
 #endif
 
     // Initialize RTX settings presets
@@ -61,10 +71,14 @@ namespace dxvk {
     if (env::getEnvVar("DXVK_TERMINATE_APP_FRAME") == "" ||
         env::getEnvVar("DXVK_GRAPHICS_PRESET_TYPE") != "0") {
       const DxvkDeviceInfo& deviceInfo = m_device->adapter()->devicePropertiesExt();
+      DxvkEarlyTrace("RtxInitializer::initialize preset path begin");
 
       RtxOptions::updateUpscalerFromDlssPreset();
+      DxvkEarlyTrace("RtxInitializer::initialize upscaler preset updated");
       RtxOptions::updateGraphicsPresets(m_device);
+      DxvkEarlyTrace("RtxInitializer::initialize graphics presets updated");
       RtxOptions::updateRaytraceModePresets(deviceInfo.core.properties.vendorID, deviceInfo.khrDeviceDriverProperties.driverID);
+      DxvkEarlyTrace("RtxInitializer::initialize raytrace presets updated");
     } else {
       // Default, init to custom unless otherwise specified
       if (RtxOptions::graphicsPreset() == GraphicsPreset::Auto) {
@@ -80,32 +94,46 @@ namespace dxvk {
 
     // Configure shader manager to understand bindless layouts
     ShaderManager::getInstance()->addGlobalExtraLayout(pCommon->getSceneManager().getBindlessResourceManager().getGlobalBindlessTableLayout(BindlessResourceManager::Buffers));
+    DxvkEarlyTrace("RtxInitializer::initialize bindless buffer layout added");
     ShaderManager::getInstance()->addGlobalExtraLayout(pCommon->getSceneManager().getBindlessResourceManager().getGlobalBindlessTableLayout(BindlessResourceManager::Textures));
+    DxvkEarlyTrace("RtxInitializer::initialize bindless texture layout added");
     ShaderManager::getInstance()->addGlobalExtraLayout(pCommon->getSceneManager().getBindlessResourceManager().getGlobalBindlessTableLayout(BindlessResourceManager::Samplers));
+    DxvkEarlyTrace("RtxInitializer::initialize bindless sampler layout added");
 
     // Need to promote all of the hardware support Options before prewarming shaders.
-    RtxOptionManager::applyPendingValues(m_device, /* forceOnChange */ true);
+    RtxOptionManager::applyPendingValues(m_device);
+    DxvkEarlyTrace("RtxInitializer::initialize pending option values applied");
 
     // Kick off shader prewarming
     startPrewarmShaders();
+    DxvkEarlyTrace("RtxInitializer::initialize shader prewarm started");
 
     // Load assets (if any) as early as possible
     if (RtxOptions::asyncAssetLoading()) {
       // Async asset loading (USD)
+      DxvkEarlyTrace("RtxInitializer::initialize async asset loading start");
       m_asyncAssetLoadThread = dxvk::thread([this] {
         env::setThreadName("rtx-initialize-assets");
         loadAssets();
       });
+      DxvkEarlyTrace("RtxInitializer::initialize async asset loading thread created");
     } else {
+      DxvkEarlyTrace("RtxInitializer::initialize sync asset loading start");
       loadAssets();
+      DxvkEarlyTrace("RtxInitializer::initialize sync asset loading complete");
     }
     pCommon->metaDLSS(); // Lazy allocator triggers init in ctor
+    DxvkEarlyTrace("RtxInitializer::initialize metaDLSS ready");
     pCommon->metaDLFG();
+    DxvkEarlyTrace("RtxInitializer::initialize metaDLFG ready");
 
     if (!asyncShaderFinalizing()) {
       // Wait for all prewarming to complete before calling "RTX initialized"
       waitForShaderPrewarm();
+      DxvkEarlyTrace("RtxInitializer::initialize shader prewarm waited");
     }
+
+    DxvkEarlyTrace("RtxInitializer::initialize complete");
   }
 
   void RtxInitializer::release() {
@@ -121,26 +149,40 @@ namespace dxvk {
   }
 
   void RtxInitializer::loadAssets() {
+    DxvkEarlyTrace("RtxInitializer::loadAssets begin");
     m_assetsLoaded = false;
 
     Rc<DxvkContext> ctx = m_device->createContext();
+    DxvkEarlyTrace("RtxInitializer::loadAssets context created");
 
     ctx->beginRecording(m_device->createCommandList());
+    DxvkEarlyTrace("RtxInitializer::loadAssets recording begun");
 
     DxvkObjects* pCommon = m_device->getCommon();
     pCommon->getSceneManager().initialize(ctx);
+    DxvkEarlyTrace("RtxInitializer::loadAssets scene manager initialized");
 
     ctx->flushCommandList();
+    DxvkEarlyTrace("RtxInitializer::loadAssets command list flushed");
 
     m_assetsLoaded = true;
+    DxvkEarlyTrace("RtxInitializer::loadAssets complete");
   }
 
   void RtxInitializer::startPrewarmShaders() {
+    DxvkEarlyTrace("RtxInitializer::startPrewarmShaders enter");
+
+    if (m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
+      DxvkEarlyTrace("RtxInitializer::startPrewarmShaders skipped for D3D11 Remix path");
+      return;
+    }
+
     // If we want to run without shader prewarming, then pipelines will be built inline with other GPU work on first use (typically means
     // long stutters whenever a yet to be compiled pipeline comes into use).
     if (!asyncShaderPrewarming()
         // WAR: Shader prewarming caused a deadlock on AMD in the past so it is forcibly disabled, should re-evaluate this at some point.
         || m_device->properties().core.properties.vendorID == static_cast<uint32_t>(DxvkGpuVendor::Amd)) {
+      DxvkEarlyTrace("RtxInitializer::startPrewarmShaders skipped");
       return;
     }
 
@@ -155,6 +197,7 @@ namespace dxvk {
 
     // Prewarm the rest of the pipelines that can be done automatically
     AutoShaderPipelinePrewarmer::prewarmComputePipelines(pCommon->pipelineManager());
+    DxvkEarlyTrace("RtxInitializer::startPrewarmShaders complete");
   }
 
   void RtxInitializer::waitForShaderPrewarm() {

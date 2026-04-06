@@ -21,7 +21,10 @@
 */
 
 #include <cstring>
+#include <cstdio>
 #include <unordered_set>
+
+#include <windows.h>
 
 #include "dxvk_adapter.h"
 
@@ -40,6 +43,57 @@
 // NV-DXVK end
 
 namespace dxvk {
+
+  namespace {
+    void DxvkAdapterEarlyTrace(const char* message) {
+      char line[1024];
+      const DWORD pid = GetCurrentProcessId();
+      const DWORD tid = GetCurrentThreadId();
+      const int lineLength = std::snprintf(line, sizeof(line), "[pid=%lu tid=%lu] %s\r\n", pid, tid, message);
+
+      if (lineLength > 0)
+        OutputDebugStringA(line);
+
+      HMODULE module = nullptr;
+
+      if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+          reinterpret_cast<LPCSTR>(&DxvkAdapterEarlyTrace),
+          &module)) {
+        module = nullptr;
+      }
+
+      wchar_t path[MAX_PATH] = {};
+      const DWORD pathLength = module != nullptr
+        ? GetModuleFileNameW(module, path, MAX_PATH)
+        : GetModuleFileNameW(nullptr, path, MAX_PATH);
+
+      if (pathLength == 0 || pathLength >= MAX_PATH)
+        return;
+
+      wchar_t* lastSeparator = wcsrchr(path, L'\\');
+
+      if (lastSeparator == nullptr)
+        return;
+
+      *(lastSeparator + 1) = L'\0';
+      wcscat_s(path, L"dxvk-adapter-early.log");
+
+      HANDLE file = CreateFileW(path,
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+
+      if (file == INVALID_HANDLE_VALUE)
+        return;
+
+      DWORD bytesWritten = 0;
+      WriteFile(file, line, static_cast<DWORD>(lineLength), &bytesWritten, nullptr);
+      CloseHandle(file);
+    }
+  }
 
   const char* GpuVendorToString(DxvkGpuVendor vendor) {
     switch (vendor) {
@@ -341,6 +395,7 @@ namespace dxvk {
   Rc<DxvkDevice> DxvkAdapter::createDevice(
     const Rc<DxvkInstance>&   instance,
           DxvkDeviceFeatures  enabledFeatures) {
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice begin");
     DxvkDeviceExtensions devExtensions;
 
     std::array<DxvkExt*, 43> devExtensionList = {{
@@ -425,6 +480,8 @@ namespace dxvk {
       // NV-DXVK end
     }
 
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice required extensions enabled");
+
     // NV-DXVK start: Integrate Aftermath extensions
     if (instance->options().enableAftermath) {
       std::array devAftermathExtensions = {
@@ -453,9 +510,13 @@ namespace dxvk {
       extensionsEnabled);
     // NV-DXVK end
 
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice optional extensions processed");
+
     // Enable additional extensions if necessary
     extensionsEnabled.merge(m_extraExtensions);
     DxvkNameList extensionNameList = extensionsEnabled.toNameList();
+
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice extension name list ready");
 
     // Enable additional device features if supported
 
@@ -511,6 +572,8 @@ namespace dxvk {
     }
 #endif
     // NV-DXVK end:
+
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice optional feature setup complete");
 
     // Create pNext chain for additional device features
     enabledFeatures.core.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR;
@@ -614,6 +677,8 @@ namespace dxvk {
     }
     // NV-DXVK end
 
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice pNext feature chain ready");
+
     // NV-DXVK start: Moved logging to where it is on more recent DXVK to properly show enabled features, also added more information to be logged
     // (Still needs driver version from latest DXVK though at the time of writing this, but we can wait on that since it needs larger changes)
 
@@ -644,6 +709,8 @@ namespace dxvk {
     this->logFeatures(enabledFeatures);
 
     // NV-DXVK end
+
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice feature logging complete");
 
     // NV-DXVK start: Check against set driver version minimums requires for Remix to run
     // Note: This vendor/driver version check could be done much sooner, but we do it here instead just before device creation or anything else
@@ -678,6 +745,8 @@ namespace dxvk {
     }
     // NV-DXVK end
 
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice driver checks complete");
+
     // Report the desired overallocation behaviour to the driver
     VkDeviceMemoryOverallocationCreateInfoAMD overallocInfo;
     overallocInfo.sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_OVERALLOCATION_CREATE_INFO_AMD;
@@ -700,6 +769,8 @@ namespace dxvk {
     const DxvkAdapterQueueIndices queueFamilies = findQueueFamilies();
 
     this->logQueueFamilies(queueFamilies);
+
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice queue families ready");
 
     // Ensure the graphics queue family is present
     // Note: This must be done as while Vulkan does require at least one queue family (as per the documentation of
@@ -801,6 +872,8 @@ namespace dxvk {
     }
     // NV-DXVK end
 
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice queue create infos ready");
+
     VkDeviceCreateInfo info;
     info.sType                      = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     info.pNext                      = enabledFeatures.core.pNext;
@@ -822,7 +895,12 @@ namespace dxvk {
     // NV-DXVK end
 
     VkDevice device = VK_NULL_HANDLE;
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice calling vkCreateDevice");
     VkResult vr = m_vki->vkCreateDevice(m_handle, &info, nullptr, &device);
+
+    char resultMessage[128];
+    std::snprintf(resultMessage, sizeof(resultMessage), "DxvkAdapter::createDevice vkCreateDevice result=%d", int(vr));
+    DxvkAdapterEarlyTrace(resultMessage);
 
     if (vr != VK_SUCCESS && enableCudaInterop) {
       // Enabling certain Vulkan extensions can cause device creation to fail on
@@ -844,6 +922,9 @@ namespace dxvk {
       info.ppEnabledExtensionNames    = extensionNameList.names();
 
       vr = m_vki->vkCreateDevice(m_handle, &info, nullptr, &device);
+
+      std::snprintf(resultMessage, sizeof(resultMessage), "DxvkAdapter::createDevice retry vkCreateDevice result=%d", int(vr));
+      DxvkAdapterEarlyTrace(resultMessage);
     }
 
     if (vr != VK_SUCCESS) {
@@ -863,7 +944,9 @@ namespace dxvk {
     Rc<DxvkDevice> result = new DxvkDevice(m_vki, instance, this,
       new vk::DeviceFn(true, m_vki->instance(), device),
       devExtensions, enabledFeatures, queueInfos);
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice DxvkDevice wrapper created");
     result->initResources();
+    DxvkAdapterEarlyTrace("DxvkAdapter::createDevice initResources complete");
     return result;
   }
 

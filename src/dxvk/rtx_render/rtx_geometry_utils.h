@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2021-2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -48,7 +48,6 @@ namespace dxvk {
   */
   class RtxGeometryUtils : public CommonDeviceObject {
     std::unique_ptr<RtxStagingDataAlloc> m_pCbData;
-    std::unique_ptr<RtxStagingDataAlloc> m_pSmoothNormalsHashData;
     Rc<DxvkContext> m_skinningContext;
     uint32_t m_skinningCommands = 0;
 
@@ -65,7 +64,7 @@ namespace dxvk {
      * \brief Currently we only support these texcoord formats...
      */
     static bool isTexcoordFormatValid(VkFormat format) {
-      return format == VK_FORMAT_R32G32B32A32_SFLOAT || format == VK_FORMAT_R32G32B32_SFLOAT || format == VK_FORMAT_R32G32_SFLOAT || format == VK_FORMAT_R16G16_SFLOAT;
+      return format == VK_FORMAT_R32G32B32A32_SFLOAT || format == VK_FORMAT_R32G32B32_SFLOAT || format == VK_FORMAT_R32G32_SFLOAT;
     }
 
     /**
@@ -163,8 +162,8 @@ namespace dxvk {
     // Vertex related:
     static void processGeometryBuffers(const InterleavedGeometryDescriptor& desc, RaytraceGeometry& output);
     static void processGeometryBuffers(const RasterGeometry& input, RaytraceGeometry& output);
-    static size_t computeOptimalVertexStride(const RasterGeometry& input, bool forceNormals = false);
-    static void cacheVertexDataOnGPU(const Rc<DxvkContext>& ctx, const RasterGeometry& input, RaytraceGeometry& output, bool forceNormals = false);
+    static size_t computeOptimalVertexStride(const RasterGeometry& input);
+    static void cacheVertexDataOnGPU(const Rc<DxvkContext>& ctx, const RasterGeometry& input, RaytraceGeometry& output);
     
     // Calculate the maximum UV tile size (i.e. minimum UV density) of a draw call.
     static float computeMaxUVTileSize(const RasterGeometry& input, const Matrix4& objectToWorld);
@@ -180,23 +179,7 @@ namespace dxvk {
     void interleaveGeometry(
       const Rc<DxvkContext>& ctx,
       const RasterGeometry& input,
-      InterleavedGeometryDescriptor& output,
-      bool forceNormals = false) const;
-
-    /**
-      * \brief Execute a compute shader to generate smooth normals on the GPU
-      *
-      * Computes area-weighted smooth normals from the triangle mesh.
-      * The normals are accumulated per-vertex from all adjacent triangles
-      * and then normalized. This overwrites any existing normal data in
-      * the geometry's normal buffer.
-      *
-      * Requires valid position, index, and normal buffers in the geometry.
-      */
-    void dispatchSmoothNormals(
-      const Rc<DxvkContext>& ctx,
-      const RasterGeometry& input,
-      RaytraceGeometry& geo);
+      InterleavedGeometryDescriptor& output) const;
 
     inline void flushCommandList() {
       if (m_skinningContext->getCommandList() != nullptr && m_skinningCommands > 0) {

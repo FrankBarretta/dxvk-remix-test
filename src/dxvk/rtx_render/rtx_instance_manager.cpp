@@ -29,7 +29,6 @@
 #include "rtx_camera_manager.h"
 #include "rtx_options.h"
 #include "rtx_materials.h"
-#include "rtx_terrain_baker.h"
 
 #include "../d3d9/d3d9_state.h"
 #include "rtx_matrix_helpers.h"
@@ -72,13 +71,6 @@ namespace dxvk {
     if (drawCall.getMaterialData().blendMode.enableBlending && !surface.alphaState.isDecal && !drawCall.getGeometryData().forceCullBit)
       flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 
-    // Disable culling for baked terrain instances when the option is enabled
-    // Terrain with back face culling enabled may flicker in some circumstances.  
-    // Forcing the geometry to be double-sided fixes the flicker, but may be undesireable in some games.
-    if (TerrainBaker::disableBackFaceCulling() && drawCall.testCategoryFlags(InstanceCategories::Terrain)) {
-      flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-    }
-
     switch (drawCall.getGeometryData().cullMode) {
     case VkCullModeFlagBits::VK_CULL_MODE_NONE:
       flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
@@ -102,8 +94,8 @@ namespace dxvk {
   RtInstance::RtInstance(const uint64_t id, uint32_t instanceVectorId)
     : m_id(id)
     , m_instanceVectorId(instanceVectorId)
-    , m_surfaceIndex(SURFACE_INDEX_INVALID)
-    , m_previousSurfaceIndex(SURFACE_INDEX_INVALID) { }
+    , m_surfaceIndex(BINDING_INDEX_INVALID)
+    , m_previousSurfaceIndex(BINDING_INDEX_INVALID) { }
 
   // Makes a copy of an instance
   RtInstance::RtInstance(const RtInstance& src, uint64_t id, uint32_t instanceVectorId)
@@ -158,7 +150,7 @@ namespace dxvk {
   namespace {
     template<int RtInstanceSize> struct CheckRtInstanceSize {
       // The second line of the build error should contain the new size of RtInstance in the template argument, i.e. `dxvk::CheckRtInstanceSize<newSize>`
-      static_assert(RtInstanceSize == 752, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
+      static_assert(RtInstanceSize == 728, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
     };
     CheckRtInstanceSize<sizeof(RtInstance)> _rtInstanceSizeTest;
   }
@@ -262,7 +254,7 @@ namespace dxvk {
   // Returns true if this is the first update this frame
   bool RtInstance::setFrameLastUpdated(const uint32_t frameIndex) {
     if (m_frameLastUpdated != frameIndex) {
-      m_seenCameraTypes.clrAll();
+      m_seenCameraTypes.clear();
 
       m_frameLastUpdated = frameIndex;
 
@@ -289,16 +281,16 @@ namespace dxvk {
   }
 
   bool RtInstance::registerCamera(CameraType::Enum cameraType, uint32_t frameIndex) {
-    const bool settingNewCameraType = !m_seenCameraTypes.test(cameraType);
+    bool settingNewCameraType = std::find(m_seenCameraTypes.begin(), m_seenCameraTypes.end(), cameraType) == m_seenCameraTypes.end();
 
-    if (settingNewCameraType)
-      m_seenCameraTypes.set(cameraType);
+    if (settingNewCameraType) 
+      m_seenCameraTypes.push_back(cameraType);
 
     return settingNewCameraType;
   }
 
   bool RtInstance::isCameraRegistered(CameraType::Enum cameraType) const {
-    return m_seenCameraTypes.test(cameraType);
+    return std::find(m_seenCameraTypes.begin(), m_seenCameraTypes.end(), cameraType) != m_seenCameraTypes.end();
   }
 
   void RtInstance::setCustomIndexBit(uint32_t oneBitMask, bool value) {
@@ -424,12 +416,10 @@ namespace dxvk {
       "Category Flags: ", m_categoryFlags.raw(), "\n",
       "\n",
       "=== Camera Types ===\n",
-      "Seen Camera Types Mask: ", m_seenCameraTypes.raw()));
-
-    for (uint32_t type = 0; type < CameraType::Count; ++type) {
-      if (m_seenCameraTypes.test(static_cast<CameraType::Enum>(type))) {
-        Logger::warn(str::format("  Camera Type: ", type));
-      }
+      "Seen Camera Types Count: ", m_seenCameraTypes.size()));
+    
+    for (size_t i = 0; i < m_seenCameraTypes.size(); ++i) {
+      Logger::warn(str::format("  Camera Type ", i, ": ", static_cast<int>(m_seenCameraTypes[i])));
     }
     
     Logger::warn(str::format(
@@ -1070,20 +1060,7 @@ namespace dxvk {
 
         currentInstance.surface.blendModeState = drawCall.getMaterialData().blendMode;
 
-        if (drawCall.isEye()) {
-          // assume that the texture transform has eye parameters encoded
-          const Matrix4& texTransform = drawCall.getTransformData().textureTransform;
-          RtEyeParams eyeParams{};
-          eyeParams.eyeballOrigin = Vector3{ texTransform.data[0].w, texTransform.data[1].w, texTransform.data[2].w };
-          eyeParams.eyeRightU = Vector3{ texTransform.data[0].x, texTransform.data[1].x, texTransform.data[2].x };
-          eyeParams.eyeUpV = Vector3{ texTransform.data[0].y, texTransform.data[1].y, texTransform.data[2].y };
-          currentInstance.surface.eyeParams = eyeParams;
-        }
-
         uint8_t spriteSheetRows = 0, spriteSheetCols = 0, spriteSheetFPS = 0;
-        materialData.getSpriteSheetData(currentInstance.surface.spriteSheetRows, currentInstance.surface.spriteSheetCols, currentInstance.surface.spriteSheetFPS);
-        currentInstance.m_isAnimated = currentInstance.surface.spriteSheetFPS != 0;
-        currentInstance.surface.objectPickingValue = drawCall.drawCallID;
 
         // Note: Extract spritesheet information from the associated material data as it ends up stored in the Surface
         // not in the Surface Material like most material information.
@@ -1106,9 +1083,7 @@ namespace dxvk {
             materialData.getOpaqueMaterialData().setEnableEmission(true);
             materialData.getOpaqueMaterialData().setEmissiveIntensity(RtxOptions::emissiveBlendOverrideEmissiveIntensity());
             materialData.getOpaqueMaterialData().setEmissiveColorTexture(materialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
-          }
-
-          currentInstance.m_isSubsurface = materialData.getOpaqueMaterialData().getSubsurfaceDiffusionProfile();
+          } 
 
           break;
         }
@@ -1129,6 +1104,13 @@ namespace dxvk {
           assert(0);
           break;
         }
+
+        currentInstance.surface.spriteSheetRows = spriteSheetRows;
+        currentInstance.surface.spriteSheetCols = spriteSheetCols;
+        currentInstance.surface.spriteSheetFPS = spriteSheetFPS;
+
+        currentInstance.m_isAnimated = currentInstance.surface.spriteSheetFPS != 0;
+        currentInstance.surface.objectPickingValue = drawCall.drawCallID;
       }
 
       // Update transform
@@ -1249,12 +1231,6 @@ namespace dxvk {
 
       if (currentInstance.m_isPlayerModel && drawCall.cameraType != CameraType::ViewModel) {
         mask |= OBJECT_MASK_PLAYER_MODEL;
-        // Lazy-clear stale instances if onFrameEnd() was skipped last frame (e.g. device loss on alt+tab)
-        const uint32_t currentFrameId = m_device->getCurrentFrameId();
-        if (m_playerModelInstancesFrameId != currentFrameId) {
-          m_playerModelInstances.clear();
-          m_playerModelInstancesFrameId = currentFrameId;
-        }
         m_playerModelInstances.push_back(&currentInstance);
       } else {
         currentInstance.m_isPlayerModel = false;
@@ -1299,15 +1275,8 @@ namespace dxvk {
     bool billboardsGotGenerated = false;
     currentInstance.m_billboardCount = 0;
     
-    if (drawCall.cameraType == CameraType::ViewModel && !currentInstance.m_isHidden && isFirstUpdateThisFrame) {
-      // Lazy-clear stale candidates if onFrameEnd() was skipped last frame (e.g. device loss on alt+tab)
-      const uint32_t currentFrameId = m_device->getCurrentFrameId();
-      if (m_viewModelCandidatesFrameId != currentFrameId) {
-        m_viewModelCandidates.clear();
-        m_viewModelCandidatesFrameId = currentFrameId;
-      }
+    if (drawCall.cameraType == CameraType::ViewModel && !currentInstance.m_isHidden && isFirstUpdateThisFrame)
       m_viewModelCandidates.push_back(&currentInstance);
-    }
 
     if (RtxOptions::enableSeparateUnorderedApproximations() &&
         (drawCall.cameraType == CameraType::Main || drawCall.cameraType == CameraType::ViewModel) &&
@@ -1471,9 +1440,7 @@ namespace dxvk {
     for (auto* candidateInstance : m_viewModelCandidates) {
 
       // Valid view model instances must be associated only with the view model camera
-      // Check: exactly one bit set (power-of-two check via raw bitmask)
-      const auto seenMask = candidateInstance->m_seenCameraTypes.raw();
-      if (seenMask == 0 || (seenMask & (seenMask - 1)) != 0)
+      if (candidateInstance->m_seenCameraTypes.size() != 1)
         continue;
 
       // Hide the reference instance since we'll create a separate instance for the view model 
@@ -1898,7 +1865,7 @@ namespace dxvk {
 
   void InstanceManager::resetSurfaceIndices() {
     for (auto instance : m_instances)
-      instance->m_surfaceIndex = SURFACE_INDEX_INVALID;
+      instance->m_surfaceIndex = BINDING_INDEX_INVALID;
   }
 
   inline bool isFpSpecial(float x) {

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2021-2026, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2021-2023, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -96,6 +96,7 @@ namespace dxvk {
     void render(
             const HWND hwnd,
             const Rc<DxvkContext>&  ctx,
+            VkSurfaceFormatKHR surfaceFormat,
             VkExtent2D         surfaceSize,
             bool               vsync);
     
@@ -149,7 +150,6 @@ namespace dxvk {
 
     // Note: May be NULL until the font loads, needs to be checked before use.
     ImFont*               m_regularFont = nullptr;
-    ImFont*               m_boldFont = nullptr;
     // Note: May be NULL until the font loads, needs to be checked before use.
     ImFont*               m_largeFont = nullptr;
 
@@ -160,13 +160,11 @@ namespace dxvk {
     bool                  m_init = false;
     bool                  m_prevCursorVisible = false;
 
-    int                   m_cachedGameCursorX = 0;
-    int                   m_cachedGameCursorY = 0;
 
     // Width of developer menu in regular mode
     float                 m_regularWindowWidth = 450.0f;
     // Width of item+label widgets in regular mode (developer menu)
-    float                 m_regularWindowWidgetWidth = 150.f;
+    float                 m_regularWindowWidgetWidth = 200.f;
 
     // Width of developer menu in large mode
     float                 m_largeWindowWidth = 670.0f;
@@ -192,6 +190,7 @@ namespace dxvk {
     float                 m_userWindowHeight = m_regularUserWindowHeight;
 
     const char*           m_userGraphicsWindowTitle = "User Graphics Settings";
+    bool                  m_userGraphicsSettingChanged = false;
     bool m_hudMessageTimeReset = false;
     std::chrono::time_point<std::chrono::steady_clock> m_hudMessageStartTime;
     bool m_reflexRangesInitialized = false;
@@ -236,6 +235,14 @@ namespace dxvk {
 
     void showHudMessages(const Rc<DxvkContext>& ctx);
 
+    void setupRendererState(
+      const Rc<DxvkContext>&  ctx,
+            VkSurfaceFormatKHR surfaceFormat,
+            VkExtent2D        surfaceSize);
+
+    void resetRendererState(
+      const Rc<DxvkContext>&  ctx);
+
     void showRenderingSettings(const Rc<DxvkContext>& ctx);
 
     void showDLFGOptions(const Rc<DxvkContext>& ctx);
@@ -274,9 +281,9 @@ namespace dxvk {
     void showMemoryStats() const;
     bool showRayReconstructionEnable(bool supportsRR);
 
-    RTX_OPTION_ARGS("rtx.gui", bool, showLegacyTextureGui, false, "A setting to toggle the old texture selection GUI, where each texture category is represented as its own list.", args.flags = RtxOptionFlags::UserSetting);
-    RTX_OPTION_ARGS("rtx.gui", bool, legacyTextureGuiShowAssignedOnly, false, "A setting to show only the textures in a category that are assigned to it (Unassigned textures are found in the new \"Uncategorized\" list at the top).\nRequires: \'Split Texture Category List\' option to be enabled.", args.flags = RtxOptionFlags::UserSetting);
-    RTX_OPTION_ARGS("rtx.gui", std::uint32_t, hudMessageAnimatedDotDurationMilliseconds, 1000, "A duration in milliseconds between each dot in the animated dot sequence for HUD messages. Must be greater than 0.\nThese dots help indicate progress is happening to the user with a bit of animation which can be configured to animate at whatever speed is desired.");
+    RTX_OPTION("rtx.gui", bool, showLegacyTextureGui, false, "A setting to toggle the old texture selection GUI, where each texture category is represented as its own list.");
+    RTX_OPTION("rtx.gui", bool, legacyTextureGuiShowAssignedOnly, false, "A setting to show only the textures in a category that are assigned to it (Unassigned textures are found in the new \"Uncategorized\" list at the top).\nRequires: \'Split Texture Category List\' option to be enabled.");
+    RTX_OPTION("rtx.gui", std::uint32_t, hudMessageAnimatedDotDurationMilliseconds, 1000, "A duration in milliseconds between each dot in the animated dot sequence for HUD messages. Must be greater than 0.\nThese dots help indicate progress is happening to the user with a bit of animation which can be configured to animate at whatever speed is desired.");
     RTX_OPTION_ARGS("rtx.gui", float, reflexStatRangeInterpolationRate, 0.05f, "A value controlling the interpolation rate applied to the Reflex stat graph ranges for smoother visualization.",
                     args.minValue = 0.0f, args.maxValue = 1.0f);
     RTX_OPTION_ARGS("rtx.gui", float, reflexStatRangePaddingRatio, 0.05f, "A value specifying the amount of padding applied to the Reflex stat graph ranges as a ratio to the calculated range.",
@@ -284,14 +291,11 @@ namespace dxvk {
 
     public: static void onThemeChange(DxvkDevice* device);
     public: static void onBackgroundAlphaChange(DxvkDevice* device);
-    RTX_OPTION_ARGS("rtx.gui", bool, compactGui, false, "A setting to toggle between compact and spacious GUI modes.",
-                    args.onChangeCallback = &onThemeChange, args.flags = RtxOptionFlags::UserSetting);
-    RTX_OPTION_ARGS("rtx.gui", float, backgroundAlpha, 1.f, "A value controlling the alpha of the GUI background.",
-                    args.onChangeCallback = &onBackgroundAlphaChange, args.minValue = 0.0f, args.maxValue = 1.0f, args.flags = RtxOptionFlags::UserSetting);
-    RTX_OPTION_ARGS("rtx.gui", Theme, themeGui, Theme::Toolkit, "A setting controlling the active GUI theme.",
-                    args.onChangeCallback = &onThemeChange, args.flags = RtxOptionFlags::UserSetting);
-    RTX_OPTION_ARGS("rtx.gui", bool, largeUiMode, false, "Toggles between Large and Regular GUI Scale Modes.",
-                    args.onChangeCallback = &onThemeChange, args.flags = RtxOptionFlags::UserSetting);
+    RTX_OPTION_ARGS("rtx.gui", bool, compactGui, false, "A setting to toggle between compact and spacious GUI modes.", args.onChangeCallback = &onThemeChange);
+    RTX_OPTION_ARGS("rtx.gui", float, backgroundAlpha, 0.90f, "A value controlling the alpha of the GUI background.",
+       args.onChangeCallback = &onBackgroundAlphaChange, args.minValue = 0.0f, args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.gui", Theme, themeGui, Theme::Toolkit, "A setting controlling the active GUI theme.", args.onChangeCallback = &onThemeChange);
+    RTX_OPTION_ARGS("rtx.gui", bool, largeUiMode, false, "Toggles between Large and Regular GUI Scale Modes.", args.onChangeCallback = &onThemeChange);
 
     private:
 

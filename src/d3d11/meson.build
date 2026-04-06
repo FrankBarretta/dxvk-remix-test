@@ -46,6 +46,7 @@ d3d11_src = [
   'd3d11_query.cpp',
   'd3d11_rasterizer.cpp',
   'd3d11_resource.cpp',
+  'd3d11_rtx.cpp',
   'd3d11_sampler.cpp',
   'd3d11_shader.cpp',
   'd3d11_state.cpp',
@@ -69,7 +70,7 @@ d3d11_dll = shared_library('d3d11'+dll_ext, dxgi_common_src + d3d11_src + d3d10_
     glsl_generator.process(d3d11_shaders), d3d11_res,
   name_prefix         : '',
   dependencies        : [ lib_dxgi, dxbc_dep, dxvk_dep ],
-  include_directories : dxvk_include_path,
+  include_directories : [ dxvk_include_path, include_directories('../dxvk'), dxvk_shader_include_path, usd_include_paths ],
   install             : true,
   vs_module_defs      : 'd3d11'+def_spec_ext,
   override_options    : ['cpp_std='+dxvk_cpp_std])

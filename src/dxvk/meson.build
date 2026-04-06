@@ -219,8 +219,6 @@ dxvk_src = files([
   'rtx_render/rtx_dust_particles.h',
   'rtx_render/rtx_env.cpp',
   'rtx_render/rtx_env.h',
-  'rtx_render/rtx_file_watch.cpp',
-  'rtx_render/rtx_file_watch.h',
   'rtx_render/rtx_game_capturer.cpp',
   'rtx_render/rtx_game_capturer.h',
   'rtx_render/rtx_game_capturer_utils.h',
@@ -285,13 +283,8 @@ dxvk_src = files([
   'rtx_render/rtx_opacity_micromap_manager.h',
   'rtx_render/rtx_option.cpp',
   'rtx_render/rtx_option.h',
-  'rtx_render/rtx_option_constants.h',
-  'rtx_render/rtx_option_layer.cpp',
-  'rtx_render/rtx_option_layer.h',
-  'rtx_render/rtx_option_manager.cpp',
-  'rtx_render/rtx_option_manager.h',
-  'rtx_render/rtx_option_layer_gui.cpp',
-  'rtx_render/rtx_option_layer_gui.h',
+  'rtx_render/rtx_option_layer_manager.cpp',
+  'rtx_render/rtx_option_layer_manager.h',
   'rtx_render/rtx_options.cpp',
   'rtx_render/rtx_options.h',
   'rtx_render/rtx_pathtracer_gbuffer.cpp',
@@ -346,9 +339,6 @@ dxvk_src = files([
   'rtx_render/rtx_particle_system.cpp',
   'rtx_render/rtx_particle_system.h',
 
-  'rtx_render/rtx_point_instancer_system.cpp',
-  'rtx_render/rtx_point_instancer_system.h',
-
   'rtx_render/graph/rtx_component_list.h',
   'rtx_render/graph/rtx_component_list.cpp',
   'rtx_render/graph/components/add.cpp',
@@ -378,9 +368,6 @@ dxvk_src = files([
 
   'rtx_render/rtx_constants.h',
 
-  'rtx_render/rtx_gui_widgets.cpp',
-  'rtx_render/rtx_gui_widgets.h',
-
   'platform/dxvk_win32_exts.cpp',
   
   'hud/dxvk_hud.cpp',
@@ -400,13 +387,13 @@ dxvk_src = files([
   'imgui/dxvk_imgui_capture.h',
   'imgui/dxvk_imgui_splash.cpp',
   'imgui/dxvk_imgui_splash.h',
-  'imgui/rtx_user_menu.cpp',
   'imgui/imconfig.h',
   'imgui/imgui.cpp',
   'imgui/imgui.h',
   'imgui/imgui_demo.cpp',
   'imgui/imgui_draw.cpp',
-  'imgui/imgui_impl_dxvk.hpp',
+  'imgui/imgui_impl_vulkan.cpp',
+  'imgui/imgui_impl_vulkan.h',
   'imgui/imgui_impl_win32.cpp',
   'imgui/imgui_impl_win32.h',
   'imgui/imgui_internal.h',
@@ -475,8 +462,7 @@ rtx_shaders = custom_target(
 )
 
 dxvk_embedded_data_files = files([
-  '../../external/fonts/NVIDIASans/NVIDIASansRg.ttf',
-  '../../external/fonts/NVIDIASans/NVIDIASansBd.ttf',
+  '../../external/fonts/NVIDIASans/NVIDIASansMd.ttf',
   '../../external/fonts/RobotoMono/RobotoMonoRg.ttf'
 ])
 
@@ -504,9 +490,7 @@ dxvk_lib = static_library('dxvk', dxvk_src, dxvk_version, [generated_dxvk_shader
   include_directories : [ dxvk_include_path, dxvk_shader_include_path, rtxdi_include_path, remix_api_include_path, rtxcr_include_path, submodules_include_path  ],
   override_options    : ['cpp_std='+dxvk_cpp_std],
   # Force switch statements over enums to either cover all cases or have a default case.
-  cpp_args            : dxvk_is_msvc ? ['/we4062'] : ['-Wswitch'],
-  cpp_pch             : ['pch/dxvk.pch.h']
-  )
+  cpp_args            : dxvk_is_msvc ? ['/we4062'] : ['-Wswitch'])
 
 dxvk_dep = declare_dependency(
   link_with           : [ dxvk_lib ],
