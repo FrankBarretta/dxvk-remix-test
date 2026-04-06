@@ -87,6 +87,7 @@ namespace dxvk {
       */
     void injectRTX(std::uint64_t cachedReflexFrameId, Rc<DxvkImage> targetImage = nullptr);
     void endFrame(std::uint64_t cachedReflexFrameId, Rc<DxvkImage> targetImage = nullptr, bool callInjectRtx = true);
+    void endFrameSceneCaptureOnly();
 
     void onPresent(Rc<DxvkImage> targetImage = nullptr);
 

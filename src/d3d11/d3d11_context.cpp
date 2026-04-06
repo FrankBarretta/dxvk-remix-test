@@ -1248,10 +1248,13 @@ namespace dxvk {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
 
+    D3D11Rtx::DrawContext remixDrawContext;
+
     if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
-      D3D11Rtx::DrawContext remixDrawContext;
       remixDrawContext.indexed = true;
       remixDrawContext.indirect = true;
+      remixDrawContext.indirectArgsBuffer = static_cast<D3D11Buffer*>(pBufferForArgs);
+      remixDrawContext.indirectArgsOffset = AlignedByteOffsetForArgs;
       m_parent->RTX().NotifyDraw(remixDrawContext);
     }
 
@@ -1280,6 +1283,9 @@ namespace dxvk {
       cmdData->count  = 1;
       cmdData->stride = 0;
     }
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
+      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
@@ -1289,10 +1295,13 @@ namespace dxvk {
     D3D10DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
 
+    D3D11Rtx::DrawContext remixDrawContext;
+
     if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
-      D3D11Rtx::DrawContext remixDrawContext;
       remixDrawContext.indexed = false;
       remixDrawContext.indirect = true;
+      remixDrawContext.indirectArgsBuffer = static_cast<D3D11Buffer*>(pBufferForArgs);
+      remixDrawContext.indirectArgsOffset = AlignedByteOffsetForArgs;
       m_parent->RTX().NotifyDraw(remixDrawContext);
     }
 
@@ -1321,6 +1330,9 @@ namespace dxvk {
       cmdData->count  = 1;
       cmdData->stride = 0;
     }
+
+    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
+      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   

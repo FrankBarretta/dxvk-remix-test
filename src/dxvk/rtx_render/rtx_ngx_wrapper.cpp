@@ -98,6 +98,16 @@ namespace dxvk
       return true;
     }
 
+    if (m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
+      Logger::info("NVIDIA NGX disabled for experimental D3D11 Remix path.");
+      m_supportsDLSS = false;
+      m_supportsRayReconstruction = false;
+      m_supportsDLFG = false;
+      m_dlfgMaxInterpolatedFrames = 0;
+      m_initialized = false;
+      return false;
+    }
+
     // Reset DLSS/DLSS-RR support flags
     // Note: This is done here so that if initialization fails before feature checking the support will be false as expected.
 

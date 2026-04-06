@@ -4,6 +4,9 @@
 #include "d3d11_texture.h"
 #include "d3d11_view_srv.h"
 
+#include "../dxvk/imgui/dxvk_imgui.h"
+#include "../dxvk/rtx_render/rtx_constants.h"
+
 namespace dxvk {
   
   D3D11ShaderResourceView::D3D11ShaderResourceView(
@@ -177,6 +180,18 @@ namespace dxvk {
 
       // Create the underlying image view object
       m_imageView = pDevice->GetDXVKDevice()->createImageView(texture->GetImage(), viewInfo);
+
+      if (m_imageView != nullptr) {
+        const Rc<DxvkImage> image = texture->GetImage();
+        if (image != nullptr && image->getHash() != kEmptyHash) {
+          ImGUI::AddTexture(image->getHash(), m_imageView, ImGUI::kTextureFlagsDefault);
+
+          if (image->getDescriptorHash() != kEmptyHash
+           && (image->info().usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+            ImGUI::AddTexture(image->getDescriptorHash(), m_imageView, ImGUI::kTextureFlagsRenderTarget);
+          }
+        }
+      }
     }
   }
   

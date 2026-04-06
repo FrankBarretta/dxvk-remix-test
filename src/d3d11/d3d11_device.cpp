@@ -154,6 +154,7 @@ namespace dxvk {
     try {
       const Com<D3D11Texture1D> texture = new D3D11Texture1D(this, &desc);
       m_initializer->InitTexture(texture->GetCommonTexture(), pInitialData);
+      texture->GetCommonTexture()->SetupForRtx(pInitialData);
       *ppTexture1D = texture.ref();
       return S_OK;
     } catch (const DxvkError& e) {
@@ -230,6 +231,7 @@ namespace dxvk {
     try {
       Com<D3D11Texture2D> texture = new D3D11Texture2D(this, &desc);
       m_initializer->InitTexture(texture->GetCommonTexture(), pInitialData);
+      texture->GetCommonTexture()->SetupForRtx(pInitialData);
       *ppTexture2D = texture.ref();
       return S_OK;
     } catch (const DxvkError& e) {
@@ -305,6 +307,7 @@ namespace dxvk {
     try {
       Com<D3D11Texture3D> texture = new D3D11Texture3D(this, &desc);
       m_initializer->InitTexture(texture->GetCommonTexture(), pInitialData);
+      texture->GetCommonTexture()->SetupForRtx(pInitialData);
       *ppTexture3D = texture.ref();
       return S_OK;
     } catch (const DxvkError& e) {

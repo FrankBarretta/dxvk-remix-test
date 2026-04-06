@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cstring>
+
+#include <glm/gtc/packing.hpp>
 
 #include "d3d11_buffer.h"
 #include "d3d11_context.h"
@@ -54,27 +57,124 @@ namespace dxvk {
 
     bool isPositionFormat(VkFormat format) {
       return format == VK_FORMAT_R32G32B32_SFLOAT
-          || format == VK_FORMAT_R32G32B32A32_SFLOAT;
+          || format == VK_FORMAT_R32G32B32A32_SFLOAT
+          || format == VK_FORMAT_R16G16B16_SFLOAT
+          || format == VK_FORMAT_R16G16B16A16_SFLOAT;
     }
 
     bool isNormalFormat(VkFormat format) {
       return format == VK_FORMAT_R32G32B32_SFLOAT
           || format == VK_FORMAT_R32G32B32A32_SFLOAT
+          || format == VK_FORMAT_R16G16B16A16_SFLOAT
+          || format == VK_FORMAT_R16G16B16A16_SNORM
+          || format == VK_FORMAT_R8G8B8A8_SNORM
+          || format == VK_FORMAT_A2B10G10R10_SNORM_PACK32
           || format == VK_FORMAT_R32_UINT;
     }
 
     bool isTexcoordFormat(VkFormat format) {
       return format == VK_FORMAT_R32G32_SFLOAT
           || format == VK_FORMAT_R32G32B32_SFLOAT
-          || format == VK_FORMAT_R32G32B32A32_SFLOAT;
+          || format == VK_FORMAT_R32G32B32A32_SFLOAT
+          || format == VK_FORMAT_R16G16_SFLOAT
+          || format == VK_FORMAT_R16G16_UNORM
+          || format == VK_FORMAT_R16G16_SNORM
+          || format == VK_FORMAT_R16G16B16A16_SFLOAT;
     }
 
     bool isColorFormat(VkFormat format) {
-      return format == VK_FORMAT_B8G8R8A8_UNORM;
+      return format == VK_FORMAT_B8G8R8A8_UNORM
+          || format == VK_FORMAT_R8G8B8A8_UNORM
+          || format == VK_FORMAT_A8B8G8R8_UNORM_PACK32
+          || format == VK_FORMAT_R16G16B16A16_UNORM;
+    }
+
+    float decodeSnorm16(int16_t value) {
+      return std::max(static_cast<float>(value) / 32767.0f, -1.0f);
+    }
+
+    bool decodePosition(const uint8_t* vertexData, VkFormat format, Vector3& position) {
+      switch (format) {
+        case VK_FORMAT_R32G32B32_SFLOAT: {
+          const auto* values = reinterpret_cast<const float*>(vertexData);
+          position = Vector3(values[0], values[1], values[2]);
+          return true;
+        }
+
+        case VK_FORMAT_R32G32B32A32_SFLOAT: {
+          const auto* values = reinterpret_cast<const float*>(vertexData);
+          position = Vector3(values[0], values[1], values[2]);
+          return true;
+        }
+
+        case VK_FORMAT_R16G16B16_SFLOAT: {
+          const auto* values = reinterpret_cast<const uint16_t*>(vertexData);
+          position = Vector3(
+            glm::unpackHalf1x16(values[0]),
+            glm::unpackHalf1x16(values[1]),
+            glm::unpackHalf1x16(values[2]));
+          return true;
+        }
+
+        case VK_FORMAT_R16G16B16A16_SFLOAT: {
+          const auto* values = reinterpret_cast<const uint16_t*>(vertexData);
+          position = Vector3(
+            glm::unpackHalf1x16(values[0]),
+            glm::unpackHalf1x16(values[1]),
+            glm::unpackHalf1x16(values[2]));
+          return true;
+        }
+
+        case VK_FORMAT_R16G16B16A16_SNORM: {
+          const auto* values = reinterpret_cast<const int16_t*>(vertexData);
+          position = Vector3(
+            decodeSnorm16(values[0]),
+            decodeSnorm16(values[1]),
+            decodeSnorm16(values[2]));
+          return true;
+        }
+
+        default:
+          return false;
+      }
     }
 
     bool hasBoundBuffer(const D3D11VertexBufferBinding& binding) {
       return binding.buffer != nullptr && binding.stride != 0u;
+    }
+
+    bool resolveIndirectDrawContext(D3D11Rtx::DrawContext& drawContext) {
+      if (!drawContext.indirect || drawContext.indirectArgsBuffer == nullptr)
+        return !drawContext.indirect;
+
+      const auto argsSlice = drawContext.indirectArgsBuffer->GetBufferSlice(drawContext.indirectArgsOffset);
+      const auto* argsData = reinterpret_cast<const uint8_t*>(argsSlice.mapPtr(0));
+
+      if (argsData == nullptr)
+        return false;
+
+      if (drawContext.indexed) {
+        const auto* args = reinterpret_cast<const VkDrawIndexedIndirectCommand*>(argsData);
+        drawContext.vertexCount = 0u;
+        drawContext.indexCount = args->indexCount;
+        drawContext.instanceCount = args->instanceCount;
+        drawContext.firstVertex = 0u;
+        drawContext.firstIndex = args->firstIndex;
+        drawContext.vertexOffset = args->vertexOffset;
+        drawContext.firstInstance = args->firstInstance;
+      } else {
+        const auto* args = reinterpret_cast<const VkDrawIndirectCommand*>(argsData);
+        drawContext.vertexCount = args->vertexCount;
+        drawContext.indexCount = 0u;
+        drawContext.instanceCount = args->instanceCount;
+        drawContext.firstVertex = args->firstVertex;
+        drawContext.firstIndex = 0u;
+        drawContext.vertexOffset = 0;
+        drawContext.firstInstance = args->firstInstance;
+      }
+
+      return drawContext.instanceCount != 0u
+          && (drawContext.indexed ? drawContext.indexCount != 0u : drawContext.vertexCount != 0u);
     }
 
     bool resolveAttribute(
@@ -190,7 +290,11 @@ namespace dxvk {
   void D3D11Rtx::CommitGeometryToRT(
           D3D11DeviceContext*         context,
     const DrawContext&                drawContext) {
-    if (!m_enabled || !m_parent->UsesImmediateContextRtx() || drawContext.indirect)
+    if (!m_enabled || !m_parent->UsesImmediateContextRtx())
+      return;
+
+    DrawContext resolvedDrawContext = drawContext;
+    if (!resolveIndirectDrawContext(resolvedDrawContext))
       return;
 
     auto& iaState = context->m_state.ia;
@@ -203,8 +307,8 @@ namespace dxvk {
       return;
 
     VkIndexType indexType = VK_INDEX_TYPE_NONE_KHR;
-    if (drawContext.indexed) {
-      if (iaState.indexBuffer.buffer == nullptr || drawContext.indexCount == 0u)
+    if (resolvedDrawContext.indexed) {
+      if (iaState.indexBuffer.buffer == nullptr || resolvedDrawContext.indexCount == 0u)
         return;
 
       switch (iaState.indexBuffer.format) {
@@ -233,7 +337,7 @@ namespace dxvk {
     resolveAttribute(iaState.inputLayout.ptr(), iaState, isTexcoordFormat, texcoordAttribute, false);
     resolveAttribute(iaState.inputLayout.ptr(), iaState, isColorFormat, colorAttribute, false);
 
-    if (drawContext.vertexOffset < 0)
+    if (resolvedDrawContext.vertexOffset < 0)
       return;
 
     if (normalAttribute.binding != nullptr && normalAttribute.attribute.location == positionAttribute.attribute.location)
@@ -248,14 +352,14 @@ namespace dxvk {
     RasterGeometry geometryData;
     geometryData.topology = vkTopology;
     geometryData.positionBuffer = makeVertexBuffer(positionAttribute);
-    if (drawContext.indexed) {
+    if (resolvedDrawContext.indexed) {
       geometryData.indexBuffer = RasterBuffer(
         iaState.indexBuffer.buffer->GetBufferSlice(
-          iaState.indexBuffer.offset + static_cast<VkDeviceSize>(drawContext.firstIndex) * getIndexStride(indexType)),
+          iaState.indexBuffer.offset + static_cast<VkDeviceSize>(resolvedDrawContext.firstIndex) * getIndexStride(indexType)),
         0u,
         getIndexStride(indexType),
         indexType);
-      geometryData.indexCount = drawContext.indexCount;
+      geometryData.indexCount = resolvedDrawContext.indexCount;
     }
 
     if (normalAttribute.binding != nullptr)
@@ -267,33 +371,33 @@ namespace dxvk {
     if (colorAttribute.binding != nullptr)
       geometryData.color0Buffer = makeVertexBuffer(colorAttribute);
 
-    uint32_t minVertex = drawContext.firstVertex;
-    uint32_t maxVertex = drawContext.firstVertex;
-    bool haveValidRange = drawContext.vertexCount != 0u;
+    uint32_t minVertex = resolvedDrawContext.firstVertex;
+    uint32_t maxVertex = resolvedDrawContext.firstVertex;
+    bool haveValidRange = resolvedDrawContext.vertexCount != 0u;
 
-    if (drawContext.indexed) {
+    if (resolvedDrawContext.indexed) {
       haveValidRange = false;
 
       switch (indexType) {
         case VK_INDEX_TYPE_UINT16:
-          haveValidRange = scanIndexRange<uint16_t>(geometryData.indexBuffer, drawContext.indexCount, drawContext.vertexOffset, minVertex, maxVertex);
+          haveValidRange = scanIndexRange<uint16_t>(geometryData.indexBuffer, resolvedDrawContext.indexCount, resolvedDrawContext.vertexOffset, minVertex, maxVertex);
           break;
 
         case VK_INDEX_TYPE_UINT32:
-          haveValidRange = scanIndexRange<uint32_t>(geometryData.indexBuffer, drawContext.indexCount, drawContext.vertexOffset, minVertex, maxVertex);
+          haveValidRange = scanIndexRange<uint32_t>(geometryData.indexBuffer, resolvedDrawContext.indexCount, resolvedDrawContext.vertexOffset, minVertex, maxVertex);
           break;
 
         default:
           break;
       }
     } else {
-      maxVertex = drawContext.firstVertex + drawContext.vertexCount - 1u;
+      maxVertex = resolvedDrawContext.firstVertex + resolvedDrawContext.vertexCount - 1u;
     }
 
     if (!haveValidRange)
       return;
 
-    geometryData.vertexCount = drawContext.indexed ? maxVertex + 1u : drawContext.vertexCount;
+    geometryData.vertexCount = resolvedDrawContext.indexed ? maxVertex + 1u : resolvedDrawContext.vertexCount;
 
     if (const auto* rasterizerState = context->m_state.rs.state) {
       const auto* desc = rasterizerState->Desc();
@@ -320,7 +424,7 @@ namespace dxvk {
     hashes[HashComponents::GeometryDescriptor] = hashGeometryDescriptor(
       geometryData.indexCount,
       geometryData.vertexCount,
-      drawContext.indexed ? geometryData.indexBuffer.indexType() : VK_INDEX_TYPE_NONE_KHR,
+      resolvedDrawContext.indexed ? geometryData.indexBuffer.indexType() : VK_INDEX_TYPE_NONE_KHR,
       geometryData.topology);
     hashes[HashComponents::VertexLayout] = hashVertexLayout(geometryData);
     hashes[HashComponents::VertexPosition] = hashVertexRange(geometryData.positionBuffer, minVertex, maxVertex);
@@ -328,7 +432,7 @@ namespace dxvk {
     if (geometryData.texcoordBuffer.defined())
       hashes[HashComponents::VertexTexcoord] = hashVertexRange(geometryData.texcoordBuffer, minVertex, maxVertex);
 
-    if (drawContext.indexed) {
+    if (resolvedDrawContext.indexed) {
       hashes[HashComponents::Indices] = hashContiguousMemory(
         geometryData.indexBuffer.mapPtr(),
         static_cast<size_t>(geometryData.indexCount) * geometryData.indexBuffer.stride());
@@ -350,8 +454,15 @@ namespace dxvk {
       __m128 maxPos = _mm_set_ps1(-FLT_MAX);
 
       for (uint32_t vertexIdx = minVertex; vertexIdx <= maxVertex; vertexIdx++) {
-        const Vector3* position = reinterpret_cast<const Vector3*>(vertexData);
-        const __m128 value = _mm_set_ps(0.0f, position->z, position->y, position->x);
+        Vector3 position;
+        if (!decodePosition(vertexData, positionBuffer.vertexFormat(), position)) {
+          return AxisAlignedBoundingBox {
+            Vector3(),
+            Vector3()
+          };
+        }
+
+        const __m128 value = _mm_set_ps(0.0f, position.z, position.y, position.x);
         minPos = _mm_min_ps(minPos, value);
         maxPos = _mm_max_ps(maxPos, value);
         vertexData += positionBuffer.stride();
@@ -395,13 +506,13 @@ namespace dxvk {
     drawCallState.setupCategoriesForTexture();
 
     DrawParameters params;
-    params.vertexCount = drawContext.vertexCount;
-    params.indexCount = drawContext.indexCount;
-    params.instanceCount = drawContext.instanceCount;
+    params.vertexCount = resolvedDrawContext.vertexCount;
+    params.indexCount = resolvedDrawContext.indexCount;
+    params.instanceCount = resolvedDrawContext.instanceCount;
     params.firstIndex = 0u;
-    params.vertexOffset = drawContext.indexed
-      ? static_cast<uint32_t>(drawContext.vertexOffset)
-      : drawContext.firstVertex;
+    params.vertexOffset = resolvedDrawContext.indexed
+      ? static_cast<uint32_t>(resolvedDrawContext.vertexOffset)
+      : resolvedDrawContext.firstVertex;
 
     context->EmitCs([params, drawCallState = std::move(drawCallState)](DxvkContext* ctx) mutable {
       RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::CommitGeometryToRT skipped because CS thread is not using an RTX context");

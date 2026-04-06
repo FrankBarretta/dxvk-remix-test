@@ -740,6 +740,17 @@ namespace dxvk {
     GlobalTime::get().update();
   }
 
+  void RtxContext::endFrameSceneCaptureOnly() {
+    getSceneManager().onFrameEnd(this);
+    getSceneManager().clearFogState();
+
+    RtxOptionManager::applyPendingValuesOptionLayers();
+    RtxOptionManager::applyPendingValues(m_device.ptr());
+
+    m_resetHistory = false;
+    GlobalTime::get().update();
+  }
+
   // Called right before D3D9 present
   void RtxContext::onPresent(Rc<DxvkImage> targetImage) {
     // If injectRTX couldn't screenshot a final image or a pre-present screenshot is requested,

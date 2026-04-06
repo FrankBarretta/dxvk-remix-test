@@ -188,6 +188,8 @@ namespace dxvk {
     Rc<DxvkImage> GetImage() const {
       return m_image;
     }
+
+    void SetupForRtx(const D3D11_SUBRESOURCE_DATA* pInitialData);
     
     /**
      * \brief Mapped subresource buffer

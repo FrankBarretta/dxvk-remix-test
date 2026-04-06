@@ -7,6 +7,7 @@
 #include "../util/util_threadpool.h"
 
 namespace dxvk {
+  class D3D11Buffer;
   class D3D11Device;
   class D3D11DeviceContext;
   class D3D11ImmediateContext;
@@ -25,6 +26,8 @@ namespace dxvk {
       uint32_t firstIndex = 0;
       int32_t vertexOffset = 0;
       uint32_t firstInstance = 0;
+      D3D11Buffer* indirectArgsBuffer = nullptr;
+      uint32_t indirectArgsOffset = 0;
     };
 
     explicit D3D11Rtx(D3D11Device* device);
