@@ -363,6 +363,9 @@ namespace dxvk {
     if (options->syncInterval >= 0)
       SyncInterval = options->syncInterval;
 
+    if (RtxOptions::enableVsyncState == EnableVsync::WaitingForImplicitSwapchain)
+      RtxOptions::enableVsyncState = SyncInterval != 0 ? EnableVsync::On : EnableVsync::Off;
+
     if (!(PresentFlags & DXGI_PRESENT_TEST)) {
       bool vsync = SyncInterval != 0;
 

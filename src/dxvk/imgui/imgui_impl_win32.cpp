@@ -561,16 +561,23 @@ IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARA
           ScreenToClient(hwnd, &p);
           io.AddMousePosEvent((float) p.x, (float) p.y);
         } else if (m.lLastX || m.lLastY) {
-          // Relative movement: accumulate to last known position
-          // ImGui expects absolute (client) positions, so query current and add deltas.
+                    // Relative movement: the OS cursor position already includes the movement delta,
+                    // so just sample the current cursor position in overlay client coordinates.
           POINT p; GetCursorPos(&p);
           ScreenToClient(hwnd, &p);
-          p.x += (int) m.lLastX;
-          p.y += (int) m.lLastY;
           io.AddMousePosEvent((float) p.x, (float) p.y);
         }
 
         auto push_button = [&](int imgui_button, bool down) {
+                    if (down) {
+                        if (bd->MouseButtonsDown == 0 && ::GetCapture() == NULL)
+                            ::SetCapture(hwnd);
+                        bd->MouseButtonsDown |= 1 << imgui_button;
+                    } else {
+                        bd->MouseButtonsDown &= ~(1 << imgui_button);
+                        if (bd->MouseButtonsDown == 0 && ::GetCapture() == hwnd)
+                            ::ReleaseCapture();
+                    }
           io.AddMouseButtonEvent(imgui_button, down);
         };
         if (m.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN)  push_button(0, true);

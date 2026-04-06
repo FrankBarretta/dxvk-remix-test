@@ -3643,8 +3643,7 @@ namespace dxvk {
   }
 
   void ImGUI::showVsyncOptions(bool enableDLFGGuard) {
-    // we should never get here without a swapchain, so we must have latched the vsync value already
-    assert(RtxOptions::enableVsyncState != EnableVsync::WaitingForImplicitSwapchain);
+    const bool awaitingImplicitSwapchain = RtxOptions::enableVsyncState == EnableVsync::WaitingForImplicitSwapchain;
     
     if (enableDLFGGuard && DxvkDLFG::enable()) {
       ImGui::BeginDisabled();
@@ -3661,6 +3660,9 @@ namespace dxvk {
     ImGui::BeginDisabled();
     ImGui::Indent();
     ImGui::TextWrapped("This setting overrides the native game's V-Sync setting.");
+    if (awaitingImplicitSwapchain) {
+      ImGui::TextWrapped("The current V-Sync state has not been latched from the swap chain yet. The first present will initialize it.");
+    }
     ImGui::Unindent();
     ImGui::EndDisabled();
     
