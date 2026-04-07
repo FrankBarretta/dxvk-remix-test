@@ -56,6 +56,10 @@ namespace dxvk {
           && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed);
     }
 
+    bool HasAuxiliaryPilotCaptureThisFrame() const {
+      return m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) != 0u;
+    }
+
     void NotifyDraw(const DrawContext& drawContext);
 
         void CommitGeometryToRT(
@@ -120,6 +124,8 @@ namespace dxvk {
     bool m_loggedAuxiliaryPilotThrottleWarning = false;
     bool m_loggedAuxiliaryPilotCompletedWarning = false;
     bool m_loggedAuxiliaryPilotResetWarning = false;
+    bool m_loggedAuxiliarySceneCaptureEndFrameWarning = false;
+    bool m_loggedAuxiliaryResetScreenResolutionWarning = false;
     bool m_loggedAuxiliaryBackendFaultWarning = false;
     std::atomic<bool> m_geometryCaptureFaultedThisFrame = false;
     std::atomic<bool> m_auxiliaryBackendFaulted = false;

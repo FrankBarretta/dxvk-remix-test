@@ -449,7 +449,21 @@ namespace dxvk {
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms();
 
+    const bool useAuxiliarySceneCaptureEndFrame = m_parent->GetOptions()->enableRemix
+      && !m_parent->UsesImmediateContextRtx()
+      && m_parent->GetOptions()->remixPilotEnableSceneCaptureEndFrame
+      && m_parent->RTX().CanUseRtxExecutionContext()
+      && m_parent->RTX().HasSeenRequiredTransforms()
+      && m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame();
+
+    const bool useAuxiliaryResetScreenResolution = useAuxiliarySceneCaptureEndFrame
+      && m_parent->GetOptions()->remixPilotEnableResetScreenResolution;
+
     if (useGuardedRtxFrameHooks) {
+      m_parent->RTX().ResetScreenResolution(immediateContext,
+        std::max(m_desc.Width, 1u),
+        std::max(m_desc.Height, 1u));
+    } else if (useAuxiliaryResetScreenResolution) {
       m_parent->RTX().ResetScreenResolution(immediateContext,
         std::max(m_desc.Width, 1u),
         std::max(m_desc.Height, 1u));
@@ -463,6 +477,8 @@ namespace dxvk {
 
     if (useGuardedRtxFrameHooks) {
       m_parent->RTX().EndFrame(immediateContext, m_swapImage);
+    } else if (useAuxiliarySceneCaptureEndFrame) {
+      m_parent->RTX().EndFrame(immediateContext, m_swapImage, false);
     }
 
     if (tracePresent)
@@ -545,6 +561,8 @@ namespace dxvk {
 
         if (tracePresent)
           D3D11EarlyTrace("D3D11SwapChain::PresentImage after RTX OnPresent");
+      } else if (useAuxiliarySceneCaptureEndFrame) {
+        m_parent->RTX().AdvanceFrameIdForPresentBypass();
       }
 
       // The fallback DX11 path does not run the RTX context frame-end hook,

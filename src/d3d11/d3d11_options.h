@@ -29,6 +29,14 @@ namespace dxvk {
     /// Remix pilot captures before returning to telemetry-only.
     int32_t remixPilotMaxSuccessfulCaptures;
 
+    /// Enables an auxiliary end-of-frame scene-capture hook
+    /// after successful D3D11 Remix pilot geometry capture.
+    bool remixPilotEnableSceneCaptureEndFrame;
+
+    /// Enables an auxiliary screen-resolution reset hook
+    /// before the D3D11 Remix pilot scene-capture end frame.
+    bool remixPilotEnableResetScreenResolution;
+
     /// Enables speed hack for mapping on deferred contexts
     ///
     /// This can substantially speed up some games, but may

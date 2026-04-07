@@ -1141,14 +1141,16 @@ namespace dxvk {
           D3D11ImmediateContext*      context,
           uint32_t                    width,
           uint32_t                    height) {
-    if (!m_parent->UsesImmediateContextRtx())
-      return;
-
     if (!m_enabled || !CanUseRtxExecutionContext())
       return;
 
     std::lock_guard<std::mutex> lock(m_mutex);
     D3D10DeviceLock contextLock = context->LockContext();
+
+    if (!m_parent->UsesImmediateContextRtx() && !m_loggedAuxiliaryResetScreenResolutionWarning) {
+      m_loggedAuxiliaryResetScreenResolutionWarning = true;
+      Logger::warn("D3D11: Auxiliary Remix pilot is running ResetScreenResolution before scene capture end frame.");
+    }
 
     if (m_screenWidth == width && m_screenHeight == height)
       return;
@@ -1175,9 +1177,6 @@ namespace dxvk {
           D3D11ImmediateContext*      context,
     const Rc<DxvkImage>&              targetImage,
           bool                        callInjectRtx) {
-    if (!m_parent->UsesImmediateContextRtx())
-      return;
-
     if (!m_enabled || !CanUseRtxExecutionContext())
       return;
 
@@ -1185,13 +1184,42 @@ namespace dxvk {
     D3D10DeviceLock contextLock = context->LockContext();
 
     const bool traceFrame = m_reflexFrameId < 8;
+    const bool useAuxiliarySceneCaptureOnly = !m_parent->UsesImmediateContextRtx();
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::EndFrame enter");
 
-    if (!m_parent->UsesImmediateContextRtx()) {
+    if (useAuxiliarySceneCaptureOnly) {
+      if (!m_loggedAuxiliarySceneCaptureEndFrameWarning) {
+        m_loggedAuxiliarySceneCaptureEndFrameWarning = true;
+        Logger::warn("D3D11: Auxiliary Remix pilot is running endFrameSceneCaptureOnly after successful geometry capture.");
+      }
+
       context->Flush();
       SynchronizeRtxCs();
+
+      auto emitSceneCaptureOnlyEndFrame = [traceFrame](DxvkContext* ctx) {
+        if (traceFrame)
+          D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary CS begin");
+
+        RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::EndFrame auxiliary scene capture skipped because the command stream is not using an RTX context");
+        if (rtxContext == nullptr)
+          return;
+
+        rtxContext->endFrameSceneCaptureOnly();
+
+        if (traceFrame)
+          D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary CS after endFrameSceneCaptureOnly");
+      };
+
+      EmitRtxCs(std::move(emitSceneCaptureOnlyEndFrame));
+      SynchronizeRtxCs();
+
+      m_geometryCaptureFaultedThisFrame.store(false, std::memory_order_relaxed);
+      m_hasProjectionMatrixThisFrame.store(false, std::memory_order_relaxed);
+      m_auxiliaryPilotCapturesThisFrame.store(0u, std::memory_order_relaxed);
+      m_pendingDrawCalls = 0;
+      return;
     }
 
     if (traceFrame)
