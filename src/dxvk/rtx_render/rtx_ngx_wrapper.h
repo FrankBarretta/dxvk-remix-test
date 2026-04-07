@@ -82,18 +82,34 @@ namespace dxvk {
     void shutdown();
 
     bool supportsDLSS() {
+      if (!m_initialized) {
+        initialize();
+      }
+
       return m_supportsDLSS;
     }
 
     bool supportsDLFG() {
+      if (!m_initialized) {
+        initialize();
+      }
+
       return m_supportsDLFG;
     }
 
     uint32_t dlfgMaxInterpolatedFrames() {
+      if (!m_initialized) {
+        initialize();
+      }
+
       return m_dlfgMaxInterpolatedFrames;
     }
 
     bool supportsRayReconstruction() {
+      if (!m_initialized) {
+        initialize();
+      }
+
       return m_supportsRayReconstruction;
     }
 

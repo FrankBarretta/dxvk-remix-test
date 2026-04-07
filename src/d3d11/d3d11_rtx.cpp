@@ -499,6 +499,11 @@ namespace dxvk {
     drawCallState.drawCallID = static_cast<uint32_t>(m_pendingDrawCalls);
     drawCallState.usesVertexShader = context->m_state.vs.shader != nullptr;
     drawCallState.usesPixelShader = context->m_state.ps.shader != nullptr;
+    if (context->m_state.rs.numViewports != 0u) {
+      const auto& viewport = context->m_state.rs.viewports[0];
+      drawCallState.minZ = std::clamp(viewport.MinDepth, 0.0f, 1.0f);
+      drawCallState.maxZ = std::clamp(viewport.MaxDepth, 0.0f, 1.0f);
+    }
     if (context->m_state.om.dsState != nullptr) {
       D3D11_DEPTH_STENCIL_DESC depthStencilDesc;
       context->m_state.om.dsState->GetDesc(&depthStencilDesc);

@@ -40,7 +40,7 @@ namespace dxvk {
     this->maxDeviceMemory = VkDeviceSize(config.getOption<int32_t>("dxgi.maxDeviceMemory", 0)) << 20;
     this->maxSharedMemory = VkDeviceSize(config.getOption<int32_t>("dxgi.maxSharedMemory", 0)) << 20;
 
-    this->nvapiHack   = config.getOption<bool>("dxgi.nvapiHack", true);
+    this->nvapiHack   = config.getOption<bool>("dxgi.nvapiHack", false);
   }
   
 }

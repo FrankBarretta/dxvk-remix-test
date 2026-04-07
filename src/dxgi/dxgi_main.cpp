@@ -9,6 +9,9 @@
 namespace dxvk {
   
   Logger Logger::s_instance("dxgi.log", LogLevel::None);
+
+  void D3D11EarlyTrace(const char*) {
+  }
   
   HRESULT createDxgiFactory(UINT Flags, REFIID riid, void **ppFactory) {
     DxgiEarlyTrace("createDxgiFactory enter");
