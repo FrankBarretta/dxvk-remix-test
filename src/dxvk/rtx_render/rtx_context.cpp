@@ -922,20 +922,27 @@ namespace dxvk {
 
     inject_finalize:
     // Reset the fog state to get it re-discovered on the next frame
+    logInjectProbeStep("before clear-fog-state");
     getSceneManager().clearFogState();
     traceInjectStage("after clear-fog-state");
+    logInjectProbeStep("after clear-fog-state");
 
     // apply changes to RtxOptions after the frame has ended
+    logInjectProbeStep("before apply-pending-options");
     RtxOptionManager::applyPendingValuesOptionLayers();
     RtxOptionManager::applyPendingValues(m_device.ptr());
     traceInjectStage("after apply-pending-options");
+    logInjectProbeStep("after apply-pending-options");
 
     // Update stats
+    logInjectProbeStep("before update-metrics");
     updateMetrics(gpuIdleTimeMilliseconds);
     traceInjectStage("after update-metrics");
+    logInjectProbeStep("after update-metrics");
 
     m_resetHistory = false;
     traceInjectStage("complete");
+    logInjectProbeStep("complete");
   }
 
   void RtxContext::endFrame(std::uint64_t cachedReflexFrameId, Rc<DxvkImage> targetImage, bool callInjectRtx) {
