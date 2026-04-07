@@ -60,6 +60,10 @@ namespace dxvk {
       return m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) != 0u;
     }
 
+    bool HasCompletedAuxiliaryInjectRtxProbe() const {
+      return m_auxiliaryInjectRtxProbeCompleted.load(std::memory_order_relaxed);
+    }
+
     void NotifyDraw(const DrawContext& drawContext);
 
         void CommitGeometryToRT(
@@ -128,12 +132,16 @@ namespace dxvk {
     bool m_loggedAuxiliaryResetScreenResolutionWarning = false;
     bool m_loggedAuxiliaryOnPresentWarning = false;
     bool m_loggedAuxiliaryFullEndFrameWarning = false;
+    bool m_loggedAuxiliaryFullEndFrameAfterProbeWarning = false;
     bool m_loggedAuxiliaryInjectRtxProbeWarning = false;
+    bool m_loggedAuxiliaryInjectRtxAfterProbeWarning = false;
     bool m_loggedAuxiliaryInjectRtxDisabledWarning = false;
+    bool m_loggedAuxiliaryInjectRtxProbeCompleteWarning = false;
     bool m_loggedAuxiliaryBackendFaultWarning = false;
     std::atomic<bool> m_geometryCaptureFaultedThisFrame = false;
     std::atomic<bool> m_auxiliaryBackendFaulted = false;
     std::atomic<bool> m_auxiliaryPilotResetPending = false;
+    std::atomic<bool> m_auxiliaryInjectRtxProbeCompleted = false;
     std::atomic<bool> m_hasProjectionMatrixThisFrame = false;
     std::atomic<bool> m_hasSeenProjectionMatrix = false;
     std::atomic<bool> m_hasSeenObjectToViewMatrix = false;
@@ -142,6 +150,7 @@ namespace dxvk {
     std::atomic<uint32_t> m_geometryCaptureFaultCount = 0;
     uint64_t m_reflexFrameId = 0;
     uint64_t m_lastAuxiliaryPilotCaptureFrame = UINT64_MAX;
+    uint64_t m_lastAuxiliaryInjectRtxCaptureFrame = UINT64_MAX;
     uint64_t m_pendingDrawCalls = 0;
     uint32_t m_screenWidth = 0;
     uint32_t m_screenHeight = 0;

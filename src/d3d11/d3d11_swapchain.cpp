@@ -448,15 +448,28 @@ namespace dxvk {
       && m_parent->UsesImmediateContextRtx()
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms();
+    const bool auxiliaryInjectRtxProbeCompleted = m_parent->RTX().HasCompletedAuxiliaryInjectRtxProbe();
 
     const bool useAuxiliarySceneCaptureEndFrame = m_parent->GetOptions()->enableRemix
       && !m_parent->UsesImmediateContextRtx()
       && m_parent->GetOptions()->remixPilotEnableSceneCaptureEndFrame
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms()
+      && !auxiliaryInjectRtxProbeCompleted
       && m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame();
 
-    const bool useAuxiliaryResetScreenResolution = useAuxiliarySceneCaptureEndFrame
+    const bool useAuxiliaryFullEndFrameAfterProbe = m_parent->GetOptions()->enableRemix
+      && !m_parent->UsesImmediateContextRtx()
+      && m_parent->GetOptions()->remixPilotEnableFullEndFrameAfterProbe
+      && m_parent->RTX().CanUseRtxExecutionContext()
+      && m_parent->RTX().HasSeenRequiredTransforms()
+      && auxiliaryInjectRtxProbeCompleted
+      && m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame();
+    const bool useAuxiliaryInjectRtxAfterProbe = useAuxiliaryFullEndFrameAfterProbe
+      && m_parent->GetOptions()->remixPilotEnableInjectRtxAfterProbe
+      && m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame();
+
+    const bool useAuxiliaryResetScreenResolution = (useAuxiliarySceneCaptureEndFrame || useAuxiliaryFullEndFrameAfterProbe)
       && m_parent->GetOptions()->remixPilotEnableResetScreenResolution;
 
     if (useGuardedRtxFrameHooks) {
@@ -479,6 +492,8 @@ namespace dxvk {
       m_parent->RTX().EndFrame(immediateContext, m_swapImage);
     } else if (useAuxiliarySceneCaptureEndFrame) {
       m_parent->RTX().EndFrame(immediateContext, m_swapImage, false);
+    } else if (useAuxiliaryFullEndFrameAfterProbe) {
+      m_parent->RTX().EndFrame(immediateContext, m_swapImage, useAuxiliaryInjectRtxAfterProbe);
     }
 
     if (tracePresent)
@@ -553,7 +568,7 @@ namespace dxvk {
       if (tracePresent)
         D3D11EarlyTrace("D3D11SwapChain::PresentImage ImGUI render complete");
 
-      const bool useAuxiliaryOnPresent = useAuxiliarySceneCaptureEndFrame
+      const bool useAuxiliaryOnPresent = (useAuxiliarySceneCaptureEndFrame || useAuxiliaryFullEndFrameAfterProbe)
         && m_parent->GetOptions()->remixPilotEnableOnPresent;
 
       if (useRemixPresentPath) {
@@ -569,7 +584,7 @@ namespace dxvk {
 
         if (tracePresent)
           D3D11EarlyTrace("D3D11SwapChain::PresentImage after auxiliary RTX OnPresent");
-      } else if (useAuxiliarySceneCaptureEndFrame) {
+      } else if (useAuxiliarySceneCaptureEndFrame || useAuxiliaryFullEndFrameAfterProbe) {
         m_parent->RTX().AdvanceFrameIdForPresentBypass();
       }
 

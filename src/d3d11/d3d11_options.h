@@ -25,8 +25,29 @@ namespace dxvk {
     /// is allowed to submit supported geometry captures.
     int32_t remixPilotCaptureInterval;
 
+    /// Enforces a minimum frame interval for supported auxiliary
+    /// D3D11 Remix captures while the one-shot injectRTX probe runs.
+    int32_t remixPilotProbeCaptureInterval;
+
+    /// Enforces a minimum frame interval for supported auxiliary
+    /// D3D11 Remix captures after the injectRTX probe completes.
+    int32_t remixPilotPostProbeCaptureInterval;
+
+    /// Caps the number of supported auxiliary D3D11 Remix
+    /// pilot captures allowed within a single frame.
+    int32_t remixPilotMaxCapturesPerFrame;
+
+    /// Caps the number of supported auxiliary D3D11 Remix
+    /// probe captures allowed within a single frame.
+    int32_t remixPilotProbeMaxCapturesPerFrame;
+
+    /// Caps the number of supported auxiliary D3D11 Remix
+    /// post-probe captures allowed within a single frame.
+    int32_t remixPilotPostProbeMaxCapturesPerFrame;
+
     /// Caps the total number of successful auxiliary D3D11
     /// Remix pilot captures before returning to telemetry-only.
+    /// Zero or negative values keep capture enabled indefinitely.
     int32_t remixPilotMaxSuccessfulCaptures;
 
     /// Enables an auxiliary end-of-frame scene-capture hook
@@ -45,9 +66,17 @@ namespace dxvk {
     /// D3D11 Remix pilot while keeping injectRTX disabled.
     bool remixPilotEnableFullEndFrame;
 
+    /// Keeps the auxiliary full end-of-frame hook enabled
+    /// after the one-shot injectRTX probe completes.
+    bool remixPilotEnableFullEndFrameAfterProbe;
+
     /// Enables injectRTX during the auxiliary full end-of-frame
     /// hook for the D3D11 Remix pilot.
     bool remixPilotEnableInjectRtx;
+
+    /// Enables injectRTX during the auxiliary full end-of-frame
+    /// hook after the one-shot injectRTX probe completes.
+    bool remixPilotEnableInjectRtxAfterProbe;
 
     /// Limits the auxiliary D3D11 Remix injectRTX probe to a
     /// maximum completed inject stage before falling back.

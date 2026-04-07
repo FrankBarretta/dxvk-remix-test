@@ -602,7 +602,12 @@ namespace dxvk {
       
       if (s_triggerUsdCapture) {
         s_triggerUsdCapture = false;
-        m_common->capturer()->triggerNewCapture();
+
+        if (m_isD3D11Remix) {
+          Logger::warn("D3D11: Capture Scene is temporarily disabled on the experimental DX11 Remix path because starting a USD capture currently destabilizes the auxiliary pipeline.");
+        } else {
+          m_common->capturer()->triggerNewCapture();
+        }
       }
       logInjectProbeStep("after usd-capture-check");
 

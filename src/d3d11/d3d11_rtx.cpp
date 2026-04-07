@@ -682,7 +682,10 @@ namespace dxvk {
     if (CanUseRtxExecutionContext() && !m_loggedExperimentalWarning) {
       m_loggedExperimentalWarning = true;
       if (!m_parent->UsesImmediateContextRtx()) {
-        Logger::warn("D3D11: Experimental auxiliary Remix pilot enabled. DX11 currently captures at most one indexed triangle-list draw per frame while frame hooks remain disabled.");
+        Logger::warn(str::format(
+          "D3D11: Experimental auxiliary Remix pilot enabled. DX11 currently captures up to ",
+          std::max(1, m_parent->GetOptions()->remixPilotMaxCapturesPerFrame),
+          " indexed triangle-list draws per frame while frame hooks remain disabled."));
       } else {
         Logger::warn("D3D11: Experimental Remix path enabled. D3D11 draws feed an auxiliary RTX command stream for supported triangle captures.");
       }
@@ -711,10 +714,17 @@ namespace dxvk {
       return;
 
     const bool usingAuxiliaryPilot = !m_parent->UsesImmediateContextRtx();
+    const bool usingAuxiliaryInjectRtxProbe = usingAuxiliaryPilot
+      && m_parent->GetOptions()->remixPilotEnableFullEndFrame
+      && m_parent->GetOptions()->remixPilotEnableInjectRtx
+      && std::max(0, m_parent->GetOptions()->remixPilotInjectRtxStageLimit) > 0;
+    const bool auxiliaryInjectRtxProbeCompleted = m_auxiliaryInjectRtxProbeCompleted.load(std::memory_order_relaxed);
     const uint32_t successfulPilotCaptures = m_auxiliaryPilotSuccessfulCaptures.load(std::memory_order_relaxed);
     const uint32_t maxSuccessfulPilotCaptures = static_cast<uint32_t>(std::max(0, m_parent->GetOptions()->remixPilotMaxSuccessfulCaptures));
 
-    if (usingAuxiliaryPilot && successfulPilotCaptures >= maxSuccessfulPilotCaptures) {
+    if (usingAuxiliaryPilot
+     && maxSuccessfulPilotCaptures > 0u
+     && successfulPilotCaptures >= maxSuccessfulPilotCaptures) {
       if (!m_loggedAuxiliaryPilotCompletedWarning) {
         m_loggedAuxiliaryPilotCompletedWarning = true;
         Logger::warn("D3D11: Auxiliary Remix pilot reached its configured successful-capture limit; further DX11 geometry capture is disabled to preserve performance.");
@@ -724,7 +734,11 @@ namespace dxvk {
     }
 
     if (usingAuxiliaryPilot && successfulPilotCaptures > 0u) {
-      const uint64_t pilotCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotCaptureInterval));
+      const uint64_t configuredPilotCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotCaptureInterval));
+      const uint64_t configuredPostProbeCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotPostProbeCaptureInterval));
+      const uint64_t pilotCaptureFrameInterval = auxiliaryInjectRtxProbeCompleted
+        ? std::max(configuredPilotCaptureFrameInterval, configuredPostProbeCaptureFrameInterval)
+        : configuredPilotCaptureFrameInterval;
 
       if (pilotCaptureFrameInterval > 0u
        && m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX
@@ -799,7 +813,10 @@ namespace dxvk {
       if (!m_parent->UsesImmediateContextRtx()) {
         if (!m_loggedAuxiliaryPilotModeWarning) {
           m_loggedAuxiliaryPilotModeWarning = true;
-          Logger::warn("D3D11: Experimental auxiliary Remix pilot enabled. DX11 currently captures at most one indexed triangle-list draw per frame while frame hooks remain disabled.");
+          Logger::warn(str::format(
+            "D3D11: Experimental auxiliary Remix pilot enabled. DX11 currently captures up to ",
+            std::max(1, m_parent->GetOptions()->remixPilotMaxCapturesPerFrame),
+            " indexed triangle-list draws per frame while frame hooks remain disabled."));
         }
       } else if (!m_loggedExperimentalWarning) {
         m_loggedExperimentalWarning = true;
@@ -825,7 +842,22 @@ namespace dxvk {
       return;
 
     if (!m_parent->UsesImmediateContextRtx()) {
-      const uint64_t pilotCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotCaptureInterval));
+      const uint64_t configuredPilotCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotCaptureInterval));
+      const uint64_t configuredProbeCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotProbeCaptureInterval));
+      const uint64_t configuredPostProbeCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotPostProbeCaptureInterval));
+      const uint32_t configuredMaxPilotCapturesPerFrame = static_cast<uint32_t>(std::max(1, m_parent->GetOptions()->remixPilotMaxCapturesPerFrame));
+      const uint32_t configuredProbeMaxPilotCapturesPerFrame = static_cast<uint32_t>(std::max(1, m_parent->GetOptions()->remixPilotProbeMaxCapturesPerFrame));
+      const uint32_t configuredPostProbeMaxPilotCapturesPerFrame = static_cast<uint32_t>(std::max(1, m_parent->GetOptions()->remixPilotPostProbeMaxCapturesPerFrame));
+      const uint64_t pilotCaptureFrameInterval = usingAuxiliaryInjectRtxProbe
+        ? std::max(configuredPilotCaptureFrameInterval, configuredProbeCaptureFrameInterval)
+        : auxiliaryInjectRtxProbeCompleted
+          ? std::max(configuredPilotCaptureFrameInterval, configuredPostProbeCaptureFrameInterval)
+          : configuredPilotCaptureFrameInterval;
+      const uint32_t maxPilotCapturesPerFrame = usingAuxiliaryInjectRtxProbe
+        ? std::min(configuredMaxPilotCapturesPerFrame, configuredProbeMaxPilotCapturesPerFrame)
+        : auxiliaryInjectRtxProbeCompleted
+          ? std::min(configuredMaxPilotCapturesPerFrame, configuredPostProbeMaxPilotCapturesPerFrame)
+          : configuredMaxPilotCapturesPerFrame;
       const bool supportedPilotDraw = resolvedDrawContext.indexed
         && resolvedDrawContext.instanceCount <= 1u
         && vkTopology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -839,7 +871,7 @@ namespace dxvk {
         return;
       }
 
-      if (m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) >= 1u)
+      if (m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) >= maxPilotCapturesPerFrame)
         return;
 
       if (pilotCaptureFrameInterval > 0u
@@ -848,9 +880,15 @@ namespace dxvk {
         if (!m_loggedAuxiliaryPilotThrottleWarning) {
           m_loggedAuxiliaryPilotThrottleWarning = true;
           Logger::warn(str::format(
-            "D3D11: Throttling the auxiliary Remix pilot to one supported draw every ",
+            "D3D11: Throttling the auxiliary Remix pilot to up to ",
+            maxPilotCapturesPerFrame,
+            " supported draws every ",
             pilotCaptureFrameInterval,
-            " frames while frame hooks remain disabled to avoid severe frame-time collapse."));
+            usingAuxiliaryInjectRtxProbe
+              ? " frames while the auxiliary injectRTX probe is active to avoid severe frame-time collapse."
+              : auxiliaryInjectRtxProbeCompleted
+                ? " frames after the successful auxiliary injectRTX probe to keep the DX11 capture-only baseline playable."
+                : " frames while frame hooks remain disabled to avoid severe frame-time collapse."));
         }
 
         return;
@@ -1091,7 +1129,7 @@ namespace dxvk {
     if (!m_parent->UsesImmediateContextRtx())
       m_lastAuxiliaryPilotCaptureFrame = m_reflexFrameId;
 
-    auto emitCommit = [this, params, drawCallState = std::move(drawCallState)](DxvkContext* ctx) mutable {
+    auto emitCommit = [this, params, usingAuxiliaryInjectRtxProbe, drawCallState = std::move(drawCallState)](DxvkContext* ctx) mutable {
       RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::CommitGeometryToRT skipped because the command stream is not using an RTX context");
       if (rtxContext == nullptr)
         return;
@@ -1099,7 +1137,10 @@ namespace dxvk {
       if (TryCommitGeometryToRt(rtxContext, params, drawCallState)) {
         if (!m_parent->UsesImmediateContextRtx()) {
           m_auxiliaryPilotSuccessfulCaptures.fetch_add(1u, std::memory_order_relaxed);
-          m_auxiliaryPilotResetPending.store(true, std::memory_order_relaxed);
+
+          if (!usingAuxiliaryInjectRtxProbe && !m_auxiliaryInjectRtxProbeCompleted.load(std::memory_order_relaxed)) {
+            m_auxiliaryPilotResetPending.store(true, std::memory_order_relaxed);
+          }
         }
 
         m_geometryCaptureFaultCount.store(0u, std::memory_order_relaxed);
@@ -1185,13 +1226,28 @@ namespace dxvk {
 
     const bool traceFrame = m_reflexFrameId < 8;
     const bool useAuxiliarySceneCaptureOnly = !m_parent->UsesImmediateContextRtx();
-    const bool useAuxiliaryFullEndFrame = useAuxiliarySceneCaptureOnly
+    const bool auxiliaryFullEndFrameRequested = useAuxiliarySceneCaptureOnly
       && m_parent->GetOptions()->remixPilotEnableFullEndFrame;
+    const bool auxiliaryFullEndFrameAfterProbeRequested = useAuxiliarySceneCaptureOnly
+      && m_parent->GetOptions()->remixPilotEnableFullEndFrameAfterProbe;
     const uint32_t auxiliaryInjectRtxStageLimit = static_cast<uint32_t>(std::max(0, m_parent->GetOptions()->remixPilotInjectRtxStageLimit));
-    const bool useAuxiliaryInjectRtxRequested = useAuxiliaryFullEndFrame
+    const bool useAuxiliaryInjectRtxRequested = auxiliaryFullEndFrameRequested
       && m_parent->GetOptions()->remixPilotEnableInjectRtx;
+    const bool auxiliaryInjectRtxProbeAlreadyCompleted = m_auxiliaryInjectRtxProbeCompleted.load(std::memory_order_relaxed);
     const bool useAuxiliaryInjectRtxProbe = useAuxiliaryInjectRtxRequested
+      && !auxiliaryInjectRtxProbeAlreadyCompleted
       && auxiliaryInjectRtxStageLimit > 0u;
+    const bool useAuxiliaryFullEndFrame = auxiliaryFullEndFrameRequested
+      && !auxiliaryInjectRtxProbeAlreadyCompleted;
+    const bool useAuxiliaryFullEndFrameAfterProbe = auxiliaryFullEndFrameAfterProbeRequested
+      && auxiliaryInjectRtxProbeAlreadyCompleted;
+    const bool useAuxiliaryInjectRtxAfterProbe = useAuxiliaryFullEndFrameAfterProbe
+      && m_parent->GetOptions()->remixPilotEnableInjectRtxAfterProbe;
+    const bool shouldRunAuxiliaryInjectRtxAfterProbe = useAuxiliaryInjectRtxAfterProbe
+      && m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX
+      && m_lastAuxiliaryPilotCaptureFrame != m_lastAuxiliaryInjectRtxCaptureFrame;
+    const bool useAuxiliaryAnyFullEndFrame = useAuxiliaryFullEndFrame
+      || useAuxiliaryFullEndFrameAfterProbe;
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::EndFrame enter");
@@ -1214,10 +1270,15 @@ namespace dxvk {
 
       logAuxiliaryInjectProbeStep("after pre-Emit SynchronizeRtxCs");
 
-      if (useAuxiliaryFullEndFrame) {
+      if (useAuxiliaryAnyFullEndFrame) {
         if (!useAuxiliaryInjectRtxProbe && !m_loggedAuxiliaryFullEndFrameWarning) {
           m_loggedAuxiliaryFullEndFrameWarning = true;
           Logger::warn("D3D11: Auxiliary Remix pilot is running full endFrame with injectRTX still disabled after successful geometry capture.");
+        }
+
+        if (useAuxiliaryFullEndFrameAfterProbe && !m_loggedAuxiliaryFullEndFrameAfterProbeWarning) {
+          m_loggedAuxiliaryFullEndFrameAfterProbeWarning = true;
+          Logger::warn("D3D11: Auxiliary Remix pilot is keeping full endFrame active after the successful injectRTX probe so visible Remix output can be evaluated on DX11.");
         }
 
         if (useAuxiliaryInjectRtxProbe && !m_loggedAuxiliaryInjectRtxProbeWarning) {
@@ -1225,16 +1286,34 @@ namespace dxvk {
           Logger::warn(str::format(
             "D3D11: Auxiliary Remix pilot is probing injectRTX up to stage ",
             auxiliaryInjectRtxStageLimit,
-            " before falling back to the stable full endFrame path."));
+            " before falling back to continuous geometry capture with scene-capture-only frame hooks."));
         }
 
-        if (useAuxiliaryInjectRtxRequested && !useAuxiliaryInjectRtxProbe && !m_loggedAuxiliaryInjectRtxDisabledWarning) {
+        if (useAuxiliaryInjectRtxRequested
+         && auxiliaryInjectRtxProbeAlreadyCompleted
+         && !useAuxiliaryFullEndFrameAfterProbe
+         && !m_loggedAuxiliaryInjectRtxProbeCompleteWarning) {
+          m_loggedAuxiliaryInjectRtxProbeCompleteWarning = true;
+          Logger::warn("D3D11: Auxiliary injectRTX probe already completed successfully on this run; keeping continuous DX11 geometry capture active while falling back to scene-capture-only frame hooks to preserve frame rate.");
+        }
+
+        if (shouldRunAuxiliaryInjectRtxAfterProbe && !m_loggedAuxiliaryInjectRtxAfterProbeWarning) {
+          m_loggedAuxiliaryInjectRtxAfterProbeWarning = true;
+          Logger::warn("D3D11: Auxiliary Remix pilot is running injectRTX once for each newly captured post-probe frame so DX11 ray tracing, lighting, and upscaling can be evaluated without repeating the same heavy work on every present.");
+        }
+
+        if (useAuxiliaryInjectRtxRequested
+         && !useAuxiliaryInjectRtxProbe
+         && !auxiliaryInjectRtxProbeAlreadyCompleted
+         && !m_loggedAuxiliaryInjectRtxDisabledWarning) {
           m_loggedAuxiliaryInjectRtxDisabledWarning = true;
           Logger::warn("D3D11: Auxiliary injectRTX was requested, but it is currently disabled after reproducing a post-load crash on Days Gone. Falling back to the previously stable full endFrame path.");
         }
 
         const auto currentReflexFrameId = m_reflexFrameId;
-        auto emitAuxiliaryFullEndFrame = [currentReflexFrameId, targetImage, traceFrame, useAuxiliaryInjectRtxProbe](DxvkContext* ctx) {
+        const bool useAuxiliaryInjectRtx = useAuxiliaryInjectRtxProbe || shouldRunAuxiliaryInjectRtxAfterProbe;
+        const uint64_t auxiliaryInjectRtxCaptureFrame = m_lastAuxiliaryPilotCaptureFrame;
+        auto emitAuxiliaryFullEndFrame = [this, currentReflexFrameId, targetImage, traceFrame, useAuxiliaryInjectRtx, useAuxiliaryInjectRtxProbe, auxiliaryInjectRtxCaptureFrame](DxvkContext* ctx) {
           if (traceFrame)
             D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary full CS begin");
 
@@ -1248,7 +1327,15 @@ namespace dxvk {
           if (useAuxiliaryInjectRtxProbe)
             Logger::warn("D3D11: Auxiliary injectRTX probe before rtxContext->endFrame.");
 
-          rtxContext->endFrame(currentReflexFrameId, targetImage, useAuxiliaryInjectRtxProbe);
+          rtxContext->endFrame(currentReflexFrameId, targetImage, useAuxiliaryInjectRtx);
+
+          if (useAuxiliaryInjectRtxProbe) {
+            m_auxiliaryInjectRtxProbeCompleted.store(true, std::memory_order_relaxed);
+          }
+
+          if (!useAuxiliaryInjectRtxProbe && useAuxiliaryInjectRtx) {
+            m_lastAuxiliaryInjectRtxCaptureFrame = auxiliaryInjectRtxCaptureFrame;
+          }
 
           if (useAuxiliaryInjectRtxProbe)
             Logger::warn("D3D11: Auxiliary injectRTX probe after rtxContext->endFrame.");
