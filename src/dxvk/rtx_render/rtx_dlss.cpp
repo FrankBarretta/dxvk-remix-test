@@ -53,10 +53,17 @@ namespace dxvk {
   }
 
   DxvkDLSS::DxvkDLSS(DxvkDevice* device) : CommonDeviceObject(device), RtxPass(device) {
-    // Trigger DLSS context creation
+    const bool isD3D11Remix = device->instance()->config().getOption<bool>("d3d11.enableRemix", false);
+
+    if (isD3D11Remix) {
+      Logger::info("DxvkDLSS: deferring DLSS context creation for D3D11 Remix startup");
+      return;
+    }
+
+    // Trigger DLSS context creation eagerly on the standard path.
     if (!m_dlssContext) {
       m_dlssContext = device->getCommon()->metaNGXContext().createDLSSContext();
-    };
+    }
   }
 
   DxvkDLSS::~DxvkDLSS() { }

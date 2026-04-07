@@ -46,6 +46,7 @@
 #include "dxvk_scoped_annotation.h"
 #include "rtx_lights_data.h"
 #include "rtx_light_utils.h"
+#include "../../d3d11/d3d11_trace.h"
 
 #include "../util/util_globaltime.h"
 
@@ -63,6 +64,7 @@ namespace dxvk {
     , m_terrainBaker(new TerrainBaker())
     , m_cameraManager(device)
     , m_uniqueObjectSearchDistance(RtxOptions::uniqueObjectDistance()) {
+    D3D11EarlyTrace("SceneManager::SceneManager enter");
     InstanceEventHandler instanceEvents(this);
     instanceEvents.onInstanceAddedCallback = [this](RtInstance& instance) { onInstanceAdded(instance); };
     instanceEvents.onInstanceUpdatedCallback = [this](RtInstance& instance, const DrawCallState& drawCall, const MaterialData& material, bool hasTransformChanged, bool hasVerticesChanged, bool isFirstUpdateThisFrame) { onInstanceUpdated(instance, drawCall, material, hasTransformChanged, hasVerticesChanged, isFirstUpdateThisFrame); };

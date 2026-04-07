@@ -1,6 +1,7 @@
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
 #include "d3d11_swapchain.h"
+#include "d3d11_trace.h"
 
 #include <mutex>
 #include <unordered_map>
@@ -14,6 +15,10 @@
 namespace dxvk {
 
   namespace {
+
+    bool ShouldTracePresentFrame(uint64_t frameId) {
+      return frameId < 8;
+    }
 
     struct D3D11WindowData {
       bool unicode;
@@ -358,6 +363,8 @@ namespace dxvk {
           UINT                      SyncInterval,
           UINT                      PresentFlags,
     const DXGI_PRESENT_PARAMETERS*  pPresentParameters) {
+    std::lock_guard<std::mutex> lock(m_presentMutex);
+
     auto options = m_parent->GetOptions();
 
     if (options->syncInterval >= 0)
@@ -423,23 +430,46 @@ namespace dxvk {
 
 
   HRESULT D3D11SwapChain::PresentImage(UINT SyncInterval) {
+    const bool tracePresent = ShouldTracePresentFrame(m_frameId);
+
+    if (tracePresent)
+      D3D11EarlyTrace("D3D11SwapChain::PresentImage enter");
+
     Com<ID3D11DeviceContext> deviceContext = nullptr;
     m_parent->GetImmediateContext(&deviceContext);
 
+    if (tracePresent)
+      D3D11EarlyTrace("D3D11SwapChain::PresentImage got immediate context");
+
     auto immediateContext = static_cast<D3D11ImmediateContext*>(deviceContext.ptr());
+    D3D10DeviceLock contextLock = immediateContext->LockContext();
+
     m_parent->RTX().ResetScreenResolution(immediateContext,
       std::max(m_desc.Width, 1u),
       std::max(m_desc.Height, 1u));
+
+    if (tracePresent)
+      D3D11EarlyTrace("D3D11SwapChain::PresentImage after ResetScreenResolution");
+
     m_parent->RTX().EndFrame(immediateContext, m_swapImage);
+
+    if (tracePresent)
+      D3D11EarlyTrace("D3D11SwapChain::PresentImage after EndFrame");
 
     // Flush pending rendering commands before
     immediateContext->Flush();
+
+    if (tracePresent)
+      D3D11EarlyTrace("D3D11SwapChain::PresentImage after immediate Flush");
 
     // Bump our frame id.
     ++m_frameId;
     
     for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
       SynchronizePresent();
+
+      if (tracePresent)
+        D3D11EarlyTrace("D3D11SwapChain::PresentImage after SynchronizePresent");
 
       if (!m_presenter->hasSwapChain())
         return DXGI_STATUS_OCCLUDED;
@@ -451,6 +481,9 @@ namespace dxvk {
       uint32_t imageIndex = 0;
 
       VkResult status = m_presenter->acquireNextImage(sync, imageIndex);
+
+      if (tracePresent)
+        D3D11EarlyTrace("D3D11SwapChain::PresentImage acquireNextImage complete");
 
       while (status != VK_SUCCESS) {
         RecreateSwapChain(m_vsync);
@@ -469,31 +502,61 @@ namespace dxvk {
       // only have to do it only for the first frame.
       m_context->beginRecording(
         m_device->createCommandList());
+
+      if (tracePresent)
+        D3D11EarlyTrace("D3D11SwapChain::PresentImage recording begun");
       
       m_blitter->presentImage(m_context.ptr(),
         m_imageViews.at(imageIndex), VkRect2D(),
         m_swapImageView, VkRect2D());
 
+      if (tracePresent)
+        D3D11EarlyTrace("D3D11SwapChain::PresentImage blitter presentImage complete");
+
       if (m_hud != nullptr)
         m_hud->render(m_context, info.format, info.imageExtent);
+
+      if (tracePresent)
+        D3D11EarlyTrace("D3D11SwapChain::PresentImage HUD render complete");
 
       auto& gui = m_device->getCommon()->getImgui();
       gui.render(m_window, m_context, info.format, info.imageExtent, m_vsync);
 
-      m_parent->RTX().OnPresent(immediateContext, m_imageViews.at(imageIndex)->image());
+      if (tracePresent)
+        D3D11EarlyTrace("D3D11SwapChain::PresentImage ImGUI render complete");
+
+      if (m_parent->GetOptions()->enableRemix) {
+        D3D11EarlyTrace("D3D11SwapChain::PresentImage remix skipping RTX OnPresent");
+        m_parent->RTX().AdvanceFrameIdForPresentBypass();
+      } else {
+        m_parent->RTX().OnPresent(immediateContext, m_imageViews.at(imageIndex)->image());
+
+        if (tracePresent)
+          D3D11EarlyTrace("D3D11SwapChain::PresentImage after RTX OnPresent");
+      }
 
       // The fallback DX11 path does not run the RTX context frame-end hook,
       // so deferred UI option changes must be flushed here.
       RtxOptionManager::applyPendingValuesOptionLayers();
       RtxOptionManager::applyPendingValues(m_device.ptr());
+
+      if (tracePresent)
+        D3D11EarlyTrace("D3D11SwapChain::PresentImage option flush complete");
       
       if (i + 1 >= SyncInterval)
         m_context->signal(m_frameLatencySignal, m_frameId);
 
       SubmitPresent(immediateContext, sync, i, imageIndex);
+
+      if (tracePresent)
+        D3D11EarlyTrace("D3D11SwapChain::PresentImage SubmitPresent complete");
     }
 
     SyncFrameLatency();
+
+    if (tracePresent)
+      D3D11EarlyTrace("D3D11SwapChain::PresentImage complete");
+
     return S_OK;
   }
 
@@ -503,29 +566,62 @@ namespace dxvk {
     const vk::PresenterSync&      Sync,
         uint32_t                FrameId,
         uint32_t                ImageIndex) {
+    D3D11EarlyTrace("D3D11SwapChain::SubmitPresent enter");
+
+    const bool isD3D11Remix = m_parent->GetOptions()->enableRemix;
+
     auto lock = pContext->LockContext();
 
     // Present from CS thread so that we don't
     // have to synchronize with it first.
     m_presentStatus.result = VK_NOT_READY;
 
+    if (isD3D11Remix) {
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix sync path begin");
+
+      Rc<DxvkCommandList> commandList = m_context->endRecording();
+
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix before submitCommandList");
+      m_device->submitCommandList(commandList, Sync.acquire, Sync.present);
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix after submitCommandList");
+
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix before presentImage");
+      m_device->presentImage(0u, false, ImageIndex, m_presenter, &m_presentStatus);
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix after presentImage");
+      return;
+    }
+
     pContext->EmitCs([this,
+      cIsD3D11Remix = isD3D11Remix,
       cFrameId     = FrameId,
       cImageIndex  = ImageIndex,
       cSync        = Sync,
-      cHud         = m_hud,
       cCommandList = m_context->endRecording()
     ] (DxvkContext* ctx) {
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent CS begin");
+
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent before submitCommandList");
       m_device->submitCommandList(cCommandList,
         cSync.acquire, cSync.present);
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent after submitCommandList");
 
-      if (cHud != nullptr && !cFrameId)
-        cHud->update(1);
+      if (!cIsD3D11Remix
+       && m_hud != nullptr
+       && !cFrameId) {
+        D3D11EarlyTrace("D3D11SwapChain::SubmitPresent before HUD update");
+        m_hud->update(1);
+        D3D11EarlyTrace("D3D11SwapChain::SubmitPresent after HUD update");
+      }
 
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent before presentImage");
       m_device->presentImage(0u, false, cImageIndex, m_presenter, &m_presentStatus);
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent after presentImage");
+
+      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent CS complete");
     });
 
     pContext->FlushCsChunk();
+    D3D11EarlyTrace("D3D11SwapChain::SubmitPresent FlushCsChunk complete");
   }
 
 

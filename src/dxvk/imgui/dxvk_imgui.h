@@ -130,6 +130,8 @@ namespace dxvk {
     }
 
   private:
+    void ensureCoreInitialized();
+
     enum class ShaderMessageType {
       None,
       Ok,

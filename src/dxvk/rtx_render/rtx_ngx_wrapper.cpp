@@ -98,8 +98,12 @@ namespace dxvk
       return true;
     }
 
-    if (m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
-      Logger::info("NVIDIA NGX disabled for experimental D3D11 Remix path.");
+    const auto& config = m_device->instance()->config();
+    const bool d3d11EnableRemix = config.getOption<bool>("d3d11.enableRemix", false);
+    const bool d3d11UseRtxContext = config.getOption<bool>("d3d11.useRtxContext", d3d11EnableRemix);
+
+    if (d3d11EnableRemix && !d3d11UseRtxContext) {
+      Logger::info("NVIDIA NGX disabled for D3D11 Remix when using the standard DXVK context.");
       m_supportsDLSS = false;
       m_supportsRayReconstruction = false;
       m_supportsDLFG = false;

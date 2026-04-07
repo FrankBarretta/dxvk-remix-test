@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mutex>
+
 #include "d3d11_texture.h"
 
 #include "../dxvk/hud/dxvk_hud.h"
@@ -78,6 +80,8 @@ namespace dxvk {
       const DXGI_MODE_DESC*           pDisplayMode);
 
   private:
+
+                std::mutex m_presentMutex;
 
     enum BindingIds : uint32_t {
       Image = 0,

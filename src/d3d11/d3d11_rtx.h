@@ -2,6 +2,9 @@
 
 #include "d3d11_include.h"
 
+#include <atomic>
+#include <mutex>
+
 #include "../dxvk/dxvk_image.h"
 #include "../dxvk/rtx_render/rtx_context.h"
 #include "../util/util_threadpool.h"
@@ -56,11 +59,15 @@ namespace dxvk {
             D3D11ImmediateContext*      context,
       const Rc<DxvkImage>&              targetImage);
 
+    void AdvanceFrameIdForPresentBypass();
+
   private:
+    std::mutex m_mutex;
     D3D11Device* const m_parent;
     const std::unique_ptr<GeometryProcessor> m_geometryWorkers;
     bool m_enabled;
     bool m_loggedExperimentalWarning = false;
+    std::atomic<bool> m_geometryCaptureDisabled = false;
     uint64_t m_reflexFrameId = 0;
     uint64_t m_pendingDrawCalls = 0;
     uint32_t m_screenWidth = 0;

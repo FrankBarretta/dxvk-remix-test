@@ -22,6 +22,7 @@
 #include "dxvk_device.h"
 #include "dxvk_instance.h"
 #include "dxvk_early_trace.h"
+#include "../d3d11/d3d11_trace.h"
 #include "rtx_render/rtx_context.h"
 #include "dxvk_scoped_annotation.h"
 #include "rtx_render/rtx_ray_reconstruction.h"
@@ -35,6 +36,36 @@
 
 
 namespace dxvk {
+
+  namespace {
+    DxvkDeviceQueue getDeviceQueue(const Rc<vk::DeviceFn>& vkd, uint32_t family, uint32_t index) {
+      VkQueue queue = VK_NULL_HANDLE;
+      vkd->vkGetDeviceQueue(vkd->device(), family, index, &queue);
+      return DxvkDeviceQueue { queue, family, index };
+    }
+
+    DxvkDeviceQueueSet createDeviceQueues(const Rc<vk::DeviceFn>& vkd, const DxvkAdapterQueueInfos& adapterQueueInfos) {
+      D3D11EarlyTrace("DxvkDevice::createDeviceQueues enter");
+      DxvkDeviceQueueSet queues;
+      queues.graphics = getDeviceQueue(vkd, adapterQueueInfos.graphics.queueFamilyIndex, adapterQueueInfos.graphics.queueIndex);
+      D3D11EarlyTrace("DxvkDevice::createDeviceQueues graphics ready");
+      queues.transfer = getDeviceQueue(vkd, adapterQueueInfos.transfer.queueFamilyIndex, adapterQueueInfos.transfer.queueIndex);
+      D3D11EarlyTrace("DxvkDevice::createDeviceQueues transfer ready");
+
+      if (adapterQueueInfos.asyncCompute.has_value()) {
+        queues.asyncCompute = getDeviceQueue(vkd, adapterQueueInfos.asyncCompute->queueFamilyIndex, adapterQueueInfos.asyncCompute->queueIndex);
+        D3D11EarlyTrace("DxvkDevice::createDeviceQueues asyncCompute ready");
+      }
+
+      if (adapterQueueInfos.present.has_value()) {
+        queues.present = getDeviceQueue(vkd, adapterQueueInfos.present->queueFamilyIndex, adapterQueueInfos.present->queueIndex);
+        D3D11EarlyTrace("DxvkDevice::createDeviceQueues present ready");
+      }
+
+      D3D11EarlyTrace("DxvkDevice::createDeviceQueues complete");
+      return queues;
+    }
+  }
   
   DxvkDevice::DxvkDevice(
     const Rc<vk::InstanceFn>&       vki,
@@ -52,22 +83,14 @@ namespace dxvk {
     m_features          (features),
     m_properties        (adapter->devicePropertiesExt()),
     m_perfHints         (getPerfHints()),
+    m_queues            (createDeviceQueues(vkd, adapterQueueInfos)),
     m_objects           (this),
     m_submissionQueue   (this) {
+    if (instance->config().getOption<bool>("d3d11.enableRemix", false)) {
+      D3D11EarlyTrace("DxvkDevice::DxvkDevice ctor body enter");
+    }
+
     // NV-DXVK start: DLFG + RTXIO
-    // Get desired queues from the device
-
-    m_queues.graphics = getQueue(adapterQueueInfos.graphics.queueFamilyIndex, adapterQueueInfos.graphics.queueIndex);
-    m_queues.transfer = getQueue(adapterQueueInfos.transfer.queueFamilyIndex, adapterQueueInfos.transfer.queueIndex);
-
-    if (adapterQueueInfos.asyncCompute.has_value()) {
-      m_queues.asyncCompute = getQueue(adapterQueueInfos.asyncCompute->queueFamilyIndex, adapterQueueInfos.asyncCompute->queueIndex);
-    }
-
-    if (adapterQueueInfos.present.has_value()) {
-      m_queues.present = getQueue(adapterQueueInfos.present->queueFamilyIndex, adapterQueueInfos.present->queueIndex);
-    }
-
     if (__DLFG_QUEUE_INFO_CHECK(adapterQueueInfos)) {
       // Note: When DLFG is active a separate queue is used for out of band rendering/presentation, so it should be marked accordingly.
       // Additionally, we do not mark the out of band render queue here as apparently it should only be marked when the out of band rendering
@@ -228,7 +251,10 @@ namespace dxvk {
   }
 
   Rc<RtxContext> DxvkDevice::createRtxContext() {
-    return new RtxContext(this);
+    DxvkEarlyTrace("DxvkDevice::createRtxContext begin");
+    Rc<RtxContext> context = new RtxContext(this);
+    DxvkEarlyTrace("DxvkDevice::createRtxContext complete");
+    return context;
   }
 
 
@@ -564,7 +590,9 @@ namespace dxvk {
     m_imageUtils(device),
     m_postFx(device),
     m_capturer(new GameCapturer(device, m_sceneManager, m_exporter.get())),
-    m_lastKnownWindowHandle((HWND) 0) { }
+    m_lastKnownWindowHandle((HWND) 0) {
+    D3D11EarlyTrace("DxvkObjects::DxvkObjects ctor enter");
+  }
 
   RtxTextureManager& DxvkObjects::getTextureManager() {
     return *m_textureManager;

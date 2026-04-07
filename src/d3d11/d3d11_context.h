@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intrin.h>
+
 #include "../dxvk/dxvk_adapter.h"
 #include "../dxvk/dxvk_cs.h"
 #include "../dxvk/dxvk_device.h"
@@ -1039,25 +1041,29 @@ namespace dxvk {
     void EmitCs(Cmd&& command) {
       m_cmdData = nullptr;
 
-      if (unlikely(!m_csChunk->push(command))) {
+                        const void* debugCallsite = _ReturnAddress();
+
+                        if (unlikely(!m_csChunk->push(command, debugCallsite))) {
         EmitCsChunk(std::move(m_csChunk));
         
         m_csChunk = AllocCsChunk();
-        m_csChunk->push(command);
+                                m_csChunk->push(command, debugCallsite);
       }
     }
 
     template<typename M, typename Cmd, typename... Args>
     M* EmitCsCmd(Cmd&& command, Args&&... args) {
+                        const void* debugCallsite = _ReturnAddress();
+
       M* data = m_csChunk->pushCmd<M, Cmd, Args...>(
-        command, std::forward<Args>(args)...);
+                                command, debugCallsite, std::forward<Args>(args)...);
 
       if (unlikely(!data)) {
         EmitCsChunk(std::move(m_csChunk));
         
         m_csChunk = AllocCsChunk();
         data = m_csChunk->pushCmd<M, Cmd, Args...>(
-          command, std::forward<Args>(args)...);
+                                        command, debugCallsite, std::forward<Args>(args)...);
       }
 
       m_cmdData = data;

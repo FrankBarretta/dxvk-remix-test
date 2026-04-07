@@ -22,6 +22,7 @@
 #include "dxvk_device.h"
 #include "dxvk_queue.h"
 #include "dxvk_scoped_annotation.h"
+#include "../d3d11/d3d11_trace.h"
 
 #include "NvLowLatencyVk.h"
 #include "GFSDK_Aftermath_GpuCrashDump.h"
@@ -32,6 +33,7 @@ namespace dxvk {
   : m_device(device),
     m_submitThread([this] () { submitCmdLists(); }),
     m_finishThread([this] () { finishCmdLists(); }) {
+    D3D11EarlyTrace("DxvkSubmissionQueue::DxvkSubmissionQueue ctor enter");
   }
   
   

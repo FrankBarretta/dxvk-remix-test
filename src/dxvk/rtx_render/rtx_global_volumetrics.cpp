@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx_global_volumetrics.h"
+#include "../../d3d11/d3d11_trace.h"
 #include "dxvk_device.h"
 #include "rtx_render/rtx_shader_manager.h"
 #include "rtx_composite.h"
@@ -171,6 +172,7 @@ namespace dxvk {
   };
 
   RtxGlobalVolumetrics::RtxGlobalVolumetrics(DxvkDevice* device) : CommonDeviceObject(device), RtxPass(device) {
+    D3D11EarlyTrace("RtxGlobalVolumetrics::RtxGlobalVolumetrics enter");
     // Volumetrics Options
 
     transmittanceColor.setDeferred(Vector3(

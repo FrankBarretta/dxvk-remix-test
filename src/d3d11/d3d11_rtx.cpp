@@ -271,10 +271,28 @@ namespace dxvk {
 
   }
 
+  namespace {
+    bool TryCommitGeometryToRt(RtxContext* rtxContext, const DrawParameters& params, DrawCallState& drawCallState) {
+#ifdef _MSC_VER
+      __try {
+        rtxContext->commitGeometryToRT(params, drawCallState);
+        return true;
+      } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+      }
+#else
+      rtxContext->commitGeometryToRT(params, drawCallState);
+      return true;
+#endif
+    }
+  }
+
 
   void D3D11Rtx::NotifyDraw(const DrawContext& drawContext) {
-    if (!m_enabled || !m_parent->UsesImmediateContextRtx())
+    if (!m_enabled || !m_parent->UsesImmediateContextRtx() || m_geometryCaptureDisabled.load(std::memory_order_relaxed))
       return;
+
+    std::lock_guard<std::mutex> lock(m_mutex);
 
     m_pendingDrawCalls += 1;
 
@@ -290,8 +308,10 @@ namespace dxvk {
   void D3D11Rtx::CommitGeometryToRT(
           D3D11DeviceContext*         context,
     const DrawContext&                drawContext) {
-    if (!m_enabled || !m_parent->UsesImmediateContextRtx())
+    if (!m_enabled || !m_parent->UsesImmediateContextRtx() || m_geometryCaptureDisabled.load(std::memory_order_relaxed))
       return;
+
+    std::lock_guard<std::mutex> lock(m_mutex);
 
     DrawContext resolvedDrawContext = drawContext;
     if (!resolveIndirectDrawContext(resolvedDrawContext))
@@ -514,12 +534,16 @@ namespace dxvk {
       ? static_cast<uint32_t>(resolvedDrawContext.vertexOffset)
       : resolvedDrawContext.firstVertex;
 
-    context->EmitCs([params, drawCallState = std::move(drawCallState)](DxvkContext* ctx) mutable {
+    context->EmitCs([this, params, drawCallState = std::move(drawCallState)](DxvkContext* ctx) mutable {
       RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::CommitGeometryToRT skipped because CS thread is not using an RTX context");
       if (rtxContext == nullptr)
         return;
 
-      rtxContext->commitGeometryToRT(params, drawCallState);
+      if (!TryCommitGeometryToRt(rtxContext, params, drawCallState)) {
+        if (!m_geometryCaptureDisabled.exchange(true, std::memory_order_relaxed)) {
+          Logger::warn("D3D11: Disabled Remix geometry capture after backend fault in commitGeometryToRT.");
+        }
+      }
     });
   }
 
@@ -530,6 +554,9 @@ namespace dxvk {
           uint32_t                    height) {
     if (!m_enabled || !m_parent->UsesImmediateContextRtx())
       return;
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    D3D10DeviceLock contextLock = context->LockContext();
 
     if (m_screenWidth == width && m_screenHeight == height)
       return;
@@ -551,19 +578,44 @@ namespace dxvk {
           D3D11ImmediateContext*      context,
     const Rc<DxvkImage>&              targetImage,
           bool                        callInjectRtx) {
-      if (!m_enabled || !m_parent->UsesImmediateContextRtx())
+    if (!m_enabled || !m_parent->UsesImmediateContextRtx())
       return;
 
-    context->Flush();
+    std::lock_guard<std::mutex> lock(m_mutex);
+    D3D10DeviceLock contextLock = context->LockContext();
+
+    const bool traceFrame = m_reflexFrameId < 8;
+
+    if (traceFrame)
+      D3D11EarlyTrace("D3D11Rtx::EndFrame enter");
+
+    if (!m_parent->GetOptions()->enableRemix) {
+      context->Flush();
+    }
+
+    if (traceFrame)
+      D3D11EarlyTrace("D3D11Rtx::EndFrame after Flush");
 
     const auto currentReflexFrameId = m_reflexFrameId;
-    context->EmitCs([currentReflexFrameId, targetImage, callInjectRtx](DxvkContext* ctx) {
+    context->EmitCs([currentReflexFrameId, targetImage, callInjectRtx, traceFrame](DxvkContext* ctx) {
+      if (traceFrame)
+        D3D11EarlyTrace("D3D11Rtx::EndFrame CS begin");
+
       RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::EndFrame skipped because CS thread is not using an RTX context");
       if (rtxContext == nullptr)
         return;
 
+      if (traceFrame)
+        D3D11EarlyTrace("D3D11Rtx::EndFrame CS before rtxContext->endFrame");
+
       rtxContext->endFrame(currentReflexFrameId, targetImage, callInjectRtx);
+
+      if (traceFrame)
+        D3D11EarlyTrace("D3D11Rtx::EndFrame CS after rtxContext->endFrame");
     });
+
+    if (traceFrame)
+      D3D11EarlyTrace("D3D11Rtx::EndFrame EmitCs queued");
 
     m_pendingDrawCalls = 0;
   }
@@ -575,14 +627,43 @@ namespace dxvk {
     if (!m_enabled || !m_parent->UsesImmediateContextRtx())
       return;
 
-    context->EmitCs([targetImage](DxvkContext* ctx) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    D3D10DeviceLock contextLock = context->LockContext();
+
+    const bool traceFrame = m_reflexFrameId < 8;
+
+    if (traceFrame)
+      D3D11EarlyTrace("D3D11Rtx::OnPresent enter");
+
+    context->EmitCs([targetImage, traceFrame](DxvkContext* ctx) {
+      if (traceFrame)
+        D3D11EarlyTrace("D3D11Rtx::OnPresent CS begin");
+
       RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::OnPresent skipped because CS thread is not using an RTX context");
       if (rtxContext == nullptr)
         return;
 
+      if (traceFrame)
+        D3D11EarlyTrace("D3D11Rtx::OnPresent CS before rtxContext->onPresent");
+
       rtxContext->onPresent(targetImage);
+
+      if (traceFrame)
+        D3D11EarlyTrace("D3D11Rtx::OnPresent CS after rtxContext->onPresent");
     });
 
+    if (traceFrame)
+      D3D11EarlyTrace("D3D11Rtx::OnPresent EmitCs queued");
+
+    m_reflexFrameId += 1;
+  }
+
+
+  void D3D11Rtx::AdvanceFrameIdForPresentBypass() {
+    if (!m_enabled || !m_parent->UsesImmediateContextRtx())
+      return;
+
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_reflexFrameId += 1;
   }
 

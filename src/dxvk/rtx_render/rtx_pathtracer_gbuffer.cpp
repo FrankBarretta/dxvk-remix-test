@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx_pathtracer_gbuffer.h"
+#include "../../d3d11/d3d11_trace.h"
 #include "dxvk_device.h"
 #include "rtx_shader_manager.h"
 #include "rtx_options.h"
@@ -212,6 +213,7 @@ namespace dxvk {
   }
 
   DxvkPathtracerGbuffer::DxvkPathtracerGbuffer(DxvkDevice* device) : CommonDeviceObject(device) {
+    D3D11EarlyTrace("DxvkPathtracerGbuffer::DxvkPathtracerGbuffer enter");
   }
 
   void DxvkPathtracerGbuffer::prewarmShaders(DxvkPipelineManager& pipelineManager) const {

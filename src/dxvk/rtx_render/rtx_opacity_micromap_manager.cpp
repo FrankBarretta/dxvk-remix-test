@@ -652,6 +652,10 @@ namespace dxvk {
   }
 
   bool OpacityMicromapManager::checkIsOpacityMicromapSupported(DxvkDevice& device) {
+    if (device.instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
+      return false;
+    }
+
     bool isOpacityMicromapSupported = device.extensions().khrSynchronization2 &&
                                       device.extensions().extOpacityMicromap;
 

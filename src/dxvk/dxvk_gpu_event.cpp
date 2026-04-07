@@ -1,4 +1,5 @@
 #include "dxvk_gpu_event.h"
+#include "../d3d11/d3d11_trace.h"
 #include "dxvk_device.h"
 
 namespace dxvk {
@@ -37,7 +38,9 @@ namespace dxvk {
 
 
   DxvkGpuEventPool::DxvkGpuEventPool(const DxvkDevice* device)
-  : m_vkd(device->vkd()) { }
+  : m_vkd(device->vkd()) {
+    D3D11EarlyTrace("DxvkGpuEventPool::DxvkGpuEventPool enter");
+  }
 
 
   DxvkGpuEventPool::~DxvkGpuEventPool() {

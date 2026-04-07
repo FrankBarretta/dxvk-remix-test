@@ -17,7 +17,7 @@ namespace dxvk {
   : D3D11DeviceChild<ID3D11DeviceContext4>(pParent),
     m_contextExt(this),
     m_annotation(this),
-    m_multithread(this, false),
+    m_multithread(this, pParent != nullptr && pParent->GetOptions()->enableRemix),
     m_device    (Device),
     m_staging   (Device, StagingBufferSize),
     m_csFlags   (CsFlags),

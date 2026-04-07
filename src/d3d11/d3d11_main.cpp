@@ -28,6 +28,39 @@ namespace {
   _purecall_handler g_previousPurecallHandler = nullptr;
   _invalid_parameter_handler g_previousInvalidParameterHandler = nullptr;
   LPTOP_LEVEL_EXCEPTION_FILTER g_previousUnhandledExceptionFilter = nullptr;
+  bool g_enableEarlyTrace = false;
+
+  struct ModuleAddressInfo {
+    HMODULE moduleBase = nullptr;
+    const char* moduleName = nullptr;
+  };
+
+  ModuleAddressInfo ModuleInfoFromAddress(const void* address, char* buffer, size_t bufferSize) {
+    if (address == nullptr || buffer == nullptr || bufferSize == 0) {
+      return {};
+    }
+
+    MEMORY_BASIC_INFORMATION memoryInfo = {};
+
+    if (VirtualQuery(address, &memoryInfo, sizeof(memoryInfo)) == 0 || memoryInfo.AllocationBase == nullptr) {
+      return {};
+    }
+
+    const DWORD pathLength = GetModuleFileNameA(
+      static_cast<HMODULE>(memoryInfo.AllocationBase),
+      buffer,
+      static_cast<DWORD>(bufferSize));
+
+    if (pathLength == 0 || pathLength >= bufferSize) {
+      return { static_cast<HMODULE>(memoryInfo.AllocationBase), nullptr };
+    }
+
+    const char* lastSeparator = std::strrchr(buffer, '\\');
+    return {
+      static_cast<HMODULE>(memoryInfo.AllocationBase),
+      lastSeparator != nullptr ? lastSeparator + 1 : buffer,
+    };
+  }
 
   void EarlyTraceImpl(const char* message) {
     char line[1024];
@@ -72,12 +105,34 @@ namespace {
 
   LONG WINAPI UnhandledExceptionLogger(EXCEPTION_POINTERS* exceptionInfo) {
     if (exceptionInfo != nullptr && exceptionInfo->ExceptionRecord != nullptr) {
-      char message[256];
-      std::snprintf(message,
-        sizeof(message),
-        "Unhandled exception code=0x%08lX address=%p",
-        static_cast<unsigned long>(exceptionInfo->ExceptionRecord->ExceptionCode),
-        exceptionInfo->ExceptionRecord->ExceptionAddress);
+      char modulePath[MAX_PATH] = {};
+      const void* exceptionAddress = exceptionInfo->ExceptionRecord->ExceptionAddress;
+      const ModuleAddressInfo moduleInfo = ModuleInfoFromAddress(exceptionAddress, modulePath, sizeof(modulePath));
+      const uintptr_t exceptionAddressValue = reinterpret_cast<uintptr_t>(exceptionAddress);
+      const uintptr_t moduleBaseValue = reinterpret_cast<uintptr_t>(moduleInfo.moduleBase);
+      const uintptr_t moduleOffset = moduleBaseValue != 0u && exceptionAddressValue >= moduleBaseValue
+        ? exceptionAddressValue - moduleBaseValue
+        : 0u;
+      char message[384];
+
+      if (moduleInfo.moduleName != nullptr) {
+        std::snprintf(message,
+          sizeof(message),
+          "Unhandled exception code=0x%08lX address=%p module=%s base=%p rva=0x%llX",
+          static_cast<unsigned long>(exceptionInfo->ExceptionRecord->ExceptionCode),
+          exceptionAddress,
+          moduleInfo.moduleName,
+          moduleInfo.moduleBase,
+          static_cast<unsigned long long>(moduleOffset));
+      } else {
+        std::snprintf(message,
+          sizeof(message),
+          "Unhandled exception code=0x%08lX address=%p base=%p",
+          static_cast<unsigned long>(exceptionInfo->ExceptionRecord->ExceptionCode),
+          exceptionAddress,
+          moduleInfo.moduleBase);
+      }
+
       EarlyTraceImpl(message);
     } else {
       EarlyTraceImpl("Unhandled exception with no exception record");
@@ -171,6 +226,9 @@ namespace {
 namespace dxvk {
 
   void D3D11EarlyTrace(const char* message) {
+    if (!g_enableEarlyTrace)
+      return;
+
     EarlyTraceImpl(message);
   }
 
@@ -182,6 +240,7 @@ extern "C" {
   BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
       g_d3d11Module = hinstDLL;
+      g_enableEarlyTrace = env::getEnvVar("DXVK_D3D11_EARLY_TRACE") == "1";
       DisableThreadLibraryCalls(hinstDLL);
       EarlyTraceImpl("DllMain DLL_PROCESS_ATTACH");
     }

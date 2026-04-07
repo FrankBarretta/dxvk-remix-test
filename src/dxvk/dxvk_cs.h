@@ -48,10 +48,19 @@ namespace dxvk {
      * \param [in] ctx The target context
      */
     virtual void exec(DxvkContext* ctx) = 0;
+
+    void setDebugCallsite(const void* callsite) {
+      m_debugCallsite = callsite;
+    }
+
+    const void* debugCallsite() const {
+      return m_debugCallsite;
+    }
     
   private:
     
     DxvkCsCmd* m_next = nullptr;
+    const void* m_debugCallsite = nullptr;
     
   };
   
@@ -165,7 +174,7 @@ namespace dxvk {
      *          a new chunk needs to be allocated
      */
     template<typename T>
-    bool push(T& command) {
+    bool push(T& command, const void* debugCallsite = nullptr) {
       using FuncType = DxvkCsTypedCmd<T>;
       
       if (unlikely(m_commandOffset > MaxBlockSize - sizeof(FuncType)))
@@ -175,6 +184,7 @@ namespace dxvk {
       
       m_tail = new (m_data + m_commandOffset)
         FuncType(std::move(command));
+      m_tail->setDebugCallsite(debugCallsite);
       
       if (likely(tail != nullptr))
         tail->setNext(m_tail);
@@ -193,7 +203,7 @@ namespace dxvk {
      * \returns Pointer to the data object, or \c nullptr
      */
     template<typename M, typename T, typename... Args>
-    M* pushCmd(T& command, Args&&... args) {
+    M* pushCmd(T& command, const void* debugCallsite, Args&&... args) {
       using FuncType = DxvkCsDataCmd<T, M>;
       
       if (unlikely(m_commandOffset > MaxBlockSize - sizeof(FuncType)))
@@ -201,6 +211,7 @@ namespace dxvk {
       
       FuncType* func = new (m_data + m_commandOffset)
         FuncType(std::move(command), std::forward<Args>(args)...);
+      func->setDebugCallsite(debugCallsite);
       
       if (likely(m_tail != nullptr))
         m_tail->setNext(func);

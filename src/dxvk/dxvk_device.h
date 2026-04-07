@@ -661,12 +661,11 @@ namespace dxvk {
     DxvkDeviceInfo              m_properties;
     
     DxvkDevicePerfHints         m_perfHints;
+    DxvkDeviceQueueSet          m_queues;
     DxvkObjects                 m_objects;
 
     sync::Spinlock              m_statLock;
     DxvkStatCounters            m_statCounters;
-    
-    DxvkDeviceQueueSet          m_queues;
     
     DxvkRecycler<DxvkCommandList,    16> m_recycledCommandLists;
     DxvkRecycler<DxvkDescriptorPool, 16> m_recycledDescriptorPools;

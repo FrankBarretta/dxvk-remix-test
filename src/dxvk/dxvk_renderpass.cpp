@@ -2,6 +2,7 @@
 
 #include "dxvk_device.h"
 #include "dxvk_renderpass.h"
+#include "../d3d11/d3d11_trace.h"
 
 namespace dxvk {
   
@@ -257,7 +258,7 @@ namespace dxvk {
   
   DxvkRenderPassPool::DxvkRenderPassPool(const DxvkDevice* device)
   : m_vkd(device->vkd()) {
-    
+    D3D11EarlyTrace("DxvkRenderPassPool::DxvkRenderPassPool enter");
   }
   
   

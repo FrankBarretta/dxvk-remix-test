@@ -1,13 +1,145 @@
 #include "dxvk_cs.h"
 #include "dxvk_scoped_annotation.h"
 
+#include <dbghelp.h>
+#include <mutex>
+#include <typeinfo>
+
+#include "../d3d11/d3d11_trace.h"
+
 // NV-DXVK start: notify user and kill process on exception in CS thread to avoid silent hangs
 #include "rtx_render/rtx_env.h"
 // NV-DXVK end
 
 #include "../tracy/TracyC.h"
 
+#pragma comment(lib, "dbghelp.lib")
+
 namespace dxvk {
+
+  namespace {
+    bool IsDx11CsTraceEnabled() {
+      static const bool enabled = env::getEnvVar("DXVK_D3D11_CS_TRACE") == "1";
+      return enabled;
+    }
+
+    std::mutex g_csSymbolMutex;
+
+    bool EnsureSymbolHandlerInitialized() {
+      static bool initialized = false;
+      static bool success = false;
+
+      if (!initialized) {
+        HANDLE process = GetCurrentProcess();
+        SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+        success = SymInitialize(process, nullptr, TRUE) == TRUE;
+        initialized = true;
+      }
+
+      return success;
+    }
+
+    void FormatCallsite(char* dst, size_t dstSize, const void* callsite) {
+      if (dstSize == 0) {
+        return;
+      }
+
+      if (callsite == nullptr) {
+        std::snprintf(dst, dstSize, "callsite=null");
+        return;
+      }
+
+      DWORD64 address = reinterpret_cast<DWORD64>(callsite);
+      HMODULE module = nullptr;
+      char moduleName[MAX_PATH] = "unknown";
+
+      if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+          reinterpret_cast<LPCSTR>(callsite), &module) && module != nullptr) {
+        GetModuleFileNameA(module, moduleName, MAX_PATH);
+      }
+
+      DWORD64 displacement = 0;
+      DWORD lineDisplacement = 0;
+      char symbolBuffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME] = {};
+      auto symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBuffer);
+      symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+      symbol->MaxNameLen = MAX_SYM_NAME;
+
+      IMAGEHLP_LINE64 lineInfo = {};
+      lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+
+      std::lock_guard<std::mutex> lock(g_csSymbolMutex);
+
+      if (!EnsureSymbolHandlerInitialized()) {
+        std::snprintf(dst, dstSize, "callsite=%p module=%s", callsite, moduleName);
+        return;
+      }
+
+      const bool hasSymbol = SymFromAddr(GetCurrentProcess(), address, &displacement, symbol) == TRUE;
+      const bool hasLine = SymGetLineFromAddr64(GetCurrentProcess(), address, &lineDisplacement, &lineInfo) == TRUE;
+
+      if (hasSymbol && hasLine) {
+        std::snprintf(dst,
+          dstSize,
+          "callsite=%p symbol=%s+0x%llx file=%s:%lu",
+          callsite,
+          symbol->Name,
+          static_cast<unsigned long long>(displacement),
+          lineInfo.FileName,
+          lineInfo.LineNumber);
+      } else if (hasSymbol) {
+        std::snprintf(dst,
+          dstSize,
+          "callsite=%p symbol=%s+0x%llx module=%s",
+          callsite,
+          symbol->Name,
+          static_cast<unsigned long long>(displacement),
+          moduleName);
+      } else {
+        std::snprintf(dst, dstSize, "callsite=%p module=%s", callsite, moduleName);
+      }
+    }
+
+    const char* GetCsCmdTypeName(const DxvkCsCmd* cmd) {
+      if (cmd == nullptr) {
+        return "null";
+      }
+
+      return typeid(*cmd).name();
+    }
+
+    const void* GetCsCmdVtable(const DxvkCsCmd* cmd) {
+      if (cmd == nullptr) {
+        return nullptr;
+      }
+
+      return *reinterpret_cast<const void* const*>(cmd);
+    }
+
+    void TraceCsChunkState(const char* phase, const DxvkCsChunk* chunk, const DxvkCsCmd* cmd, const DxvkCsCmd* next, uint32_t index) {
+      if (!IsDx11CsTraceEnabled()) {
+        return;
+      }
+
+      char callsite[512];
+      FormatCallsite(callsite, sizeof(callsite), cmd != nullptr ? cmd->debugCallsite() : nullptr);
+
+      char message[1024];
+      std::snprintf(message,
+        sizeof(message),
+        "DxvkCsChunk::executeAll %s chunk=%p cmd=%p next=%p index=%u type=%s vtbl=%p %s",
+        phase,
+        chunk,
+        cmd,
+        next,
+        index,
+        GetCsCmdTypeName(cmd),
+        GetCsCmdVtable(cmd),
+        callsite);
+      D3D11EarlyTrace(message);
+    }
+
+  }
   
   DxvkCsChunk::DxvkCsChunk() {
     
@@ -27,25 +159,40 @@ namespace dxvk {
   void DxvkCsChunk::executeAll(DxvkContext* ctx) {
     ScopedCpuProfileZone();
     auto cmd = m_head;
+    uint32_t cmdIndex = 0;
+
+    TraceCsChunkState("begin", this, m_head, m_tail, 0u);
     
     if (m_flags.test(DxvkCsChunkFlag::SingleUse)) {
       m_commandOffset = 0;
       
       while (cmd != nullptr) {
+        TraceCsChunkState("before-next", this, cmd, nullptr, cmdIndex);
         auto next = cmd->next();
+        TraceCsChunkState("before-exec", this, cmd, next, cmdIndex);
         cmd->exec(ctx);
+        TraceCsChunkState("after-exec", this, cmd, next, cmdIndex);
         cmd->~DxvkCsCmd();
+        TraceCsChunkState("after-dtor", this, cmd, next, cmdIndex);
         cmd = next;
+        cmdIndex += 1;
       }
 
       m_head = nullptr;
       m_tail = nullptr;
     } else {
       while (cmd != nullptr) {
+        TraceCsChunkState("before-next", this, cmd, nullptr, cmdIndex);
+        auto next = cmd->next();
+        TraceCsChunkState("before-exec", this, cmd, next, cmdIndex);
         cmd->exec(ctx);
-        cmd = cmd->next();
+        TraceCsChunkState("after-exec", this, cmd, next, cmdIndex);
+        cmd = next;
+        cmdIndex += 1;
       }
     }
+
+    TraceCsChunkState("complete", this, m_head, m_tail, cmdIndex);
   }
   
   

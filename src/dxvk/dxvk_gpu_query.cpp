@@ -3,6 +3,7 @@
 #include "dxvk_cmdlist.h"
 #include "dxvk_device.h"
 #include "dxvk_gpu_query.h"
+#include "../d3d11/d3d11_trace.h"
 
 namespace dxvk {
 
@@ -259,7 +260,7 @@ namespace dxvk {
     m_statistic(device, VK_QUERY_TYPE_PIPELINE_STATISTICS,           1024),
     m_timestamp(device, VK_QUERY_TYPE_TIMESTAMP,                     1024),
     m_xfbStream(device, VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT, 1024) {
-    
+    D3D11EarlyTrace("DxvkGpuQueryPool::DxvkGpuQueryPool enter");
   }
   
 

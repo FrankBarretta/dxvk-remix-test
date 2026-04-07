@@ -25,10 +25,13 @@
 #include <array>
 
 #include "dxvk_device.h"
+#include "../dxvk_early_trace.h"
 #include "dxvk_scoped_annotation.h"
 #include "rtx_shader_manager.h"
 #include "dxvk_adapter.h"
 #include "rtx_context.h"
+
+#include "../../d3d11/d3d11_trace.h"
 #include "rtx_asset_exporter.h"
 #include "rtx_options.h"
 #include "rtx_bindless_resource_manager.h"
@@ -142,6 +145,7 @@ namespace dxvk {
 
   RtxContext::RtxContext(const Rc<DxvkDevice>& device)
     : DxvkContext(device) {
+    DxvkEarlyTrace("RtxContext::RtxContext begin");
     // Note: This may not be the best place to check for these features/properties, they ideally would be specified as
     // required upfront, but there's no good place to do that for this RTX extension (the D3D9 stuff does it before device
     // creation), so instead we just check for what is needed.
@@ -171,25 +175,48 @@ namespace dxvk {
                        m_device->extensions().nvxImageViewHandle &&
                        m_device->extensions().khrPushDescriptor);
 
+    DxvkEarlyTrace("RtxContext::RtxContext capability flags computed");
+
 
     if (env::getEnvVar("DXVK_DUMP_SCREENSHOT_FRAME") != "") {
       m_screenshotFrameNum = stoul(env::getEnvVar("DXVK_DUMP_SCREENSHOT_FRAME"));
       m_screenshotFrameEnabled = true;
     }
 
+    DxvkEarlyTrace("RtxContext::RtxContext screenshot env processed");
+
     if (env::getEnvVar("DXVK_TERMINATE_APP_FRAME") != "") {
       m_terminateAppFrameNum = stoul(env::getEnvVar("DXVK_TERMINATE_APP_FRAME"));
       m_triggerDelayedTerminate = true;
     }
 
+    DxvkEarlyTrace("RtxContext::RtxContext terminate env processed");
+
     m_prevRunningTime = std::chrono::steady_clock::now();
 
-    checkOpacityMicromapSupport();
-    checkShaderExecutionReorderingSupport();
-    checkNeuralRadianceCacheSupport();
-    reportCpuSimdSupport();
+    DxvkEarlyTrace("RtxContext::RtxContext running time initialized");
 
+    const bool isD3D11Remix = m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false);
+    if (isD3D11Remix) {
+      DxvkEarlyTrace("RtxContext::RtxContext skipping checkOpacityMicromapSupport for D3D11 Remix");
+    } else {
+      DxvkEarlyTrace("RtxContext::RtxContext checkOpacityMicromapSupport enter");
+      checkOpacityMicromapSupport();
+      DxvkEarlyTrace("RtxContext::RtxContext checkOpacityMicromapSupport complete");
+    }
+    DxvkEarlyTrace("RtxContext::RtxContext checkShaderExecutionReorderingSupport enter");
+    checkShaderExecutionReorderingSupport();
+    DxvkEarlyTrace("RtxContext::RtxContext checkShaderExecutionReorderingSupport complete");
+    DxvkEarlyTrace("RtxContext::RtxContext checkNeuralRadianceCacheSupport enter");
+    checkNeuralRadianceCacheSupport();
+    DxvkEarlyTrace("RtxContext::RtxContext checkNeuralRadianceCacheSupport complete");
+    DxvkEarlyTrace("RtxContext::RtxContext reportCpuSimdSupport enter");
+    reportCpuSimdSupport();
+    DxvkEarlyTrace("RtxContext::RtxContext reportCpuSimdSupport complete");
+
+    DxvkEarlyTrace("RtxContext::RtxContext GlobalTime init enter");
     GlobalTime::get().init(RtxOptions::timeDeltaBetweenFrames());
+    DxvkEarlyTrace("RtxContext::RtxContext complete");
   }
 
   RtxContext::~RtxContext() {
@@ -724,10 +751,13 @@ namespace dxvk {
   }
 
   void RtxContext::endFrame(std::uint64_t cachedReflexFrameId, Rc<DxvkImage> targetImage, bool callInjectRtx) {
+    D3D11EarlyTrace("RtxContext::endFrame enter");
 
     if (callInjectRtx) {
       // Fallback inject (is a no-op if already injected this frame, or no valid RT scene)
+      D3D11EarlyTrace("RtxContext::endFrame before injectRTX");
       injectRTX(cachedReflexFrameId, targetImage);
+      D3D11EarlyTrace("RtxContext::endFrame after injectRTX");
     }
 
 #ifdef REMIX_DEVELOPMENT
@@ -738,6 +768,7 @@ namespace dxvk {
 
     // Update time on the frame end so all other systems can benefit from a global time
     GlobalTime::get().update();
+    D3D11EarlyTrace("RtxContext::endFrame complete");
   }
 
   void RtxContext::endFrameSceneCaptureOnly() {
@@ -753,6 +784,7 @@ namespace dxvk {
 
   // Called right before D3D9 present
   void RtxContext::onPresent(Rc<DxvkImage> targetImage) {
+    D3D11EarlyTrace("RtxContext::onPresent enter");
     // If injectRTX couldn't screenshot a final image or a pre-present screenshot is requested,
     // take a screenshot of a present image (with UI and others)
     {
@@ -771,6 +803,7 @@ namespace dxvk {
       }
     }
     s_triggerScreenshot = false;
+    D3D11EarlyTrace("RtxContext::onPresent after screenshot logic");
 
     // Some time in the future kill process
     if (m_triggerDelayedTerminate &&
@@ -783,8 +816,11 @@ namespace dxvk {
       env::killProcess();
     }
 
+    D3D11EarlyTrace("RtxContext::onPresent after terminate check");
+
     // This needs to happen at the end of frame, after ImGUI rendering
     GpuMemoryTracker::onFrameEnd();
+    D3D11EarlyTrace("RtxContext::onPresent complete");
   }
 
   void RtxContext::updateMetrics(const float gpuIdleTimeMilliseconds) const {
@@ -1338,11 +1374,18 @@ namespace dxvk {
   }
 
   void RtxContext::checkOpacityMicromapSupport() {
-    bool isOpacityMicromapSupported = OpacityMicromapManager::checkIsOpacityMicromapSupported(*m_device);
+    DxvkEarlyTrace("RtxContext::checkOpacityMicromapSupport begin");
 
+    DxvkEarlyTrace("RtxContext::checkOpacityMicromapSupport probe begin");
+    const bool isOpacityMicromapSupported = OpacityMicromapManager::checkIsOpacityMicromapSupported(*m_device);
+    DxvkEarlyTrace("RtxContext::checkOpacityMicromapSupport probe complete");
+
+    DxvkEarlyTrace("RtxContext::checkOpacityMicromapSupport set option begin");
     RtxOptions::setIsOpacityMicromapSupported(isOpacityMicromapSupported);
+    DxvkEarlyTrace("RtxContext::checkOpacityMicromapSupport set option complete");
 
     Logger::info(str::format("[RTX info] Opacity Micromap: ", isOpacityMicromapSupported ? "supported" : "not supported"));
+    DxvkEarlyTrace("RtxContext::checkOpacityMicromapSupport complete");
   }
 
   bool RtxContext::checkIsShaderExecutionReorderingSupported(DxvkDevice& device) {

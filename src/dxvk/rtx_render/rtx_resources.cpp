@@ -21,6 +21,7 @@
 */
 #include <random>
 #include "rtx_resources.h"
+#include "../../d3d11/d3d11_trace.h"
 #include "dxvk_device.h"
 #include "dxvk_context.h"
 #include "../util/util_blueNoise_128x128x64.h"
@@ -342,7 +343,9 @@ namespace dxvk {
   }
 
   Resources::Resources(DxvkDevice* device)
-    : CommonDeviceObject(device) { }
+    : CommonDeviceObject(device) {
+    D3D11EarlyTrace("Resources::Resources enter");
+  }
 
   void Resources::createRaytracingOutput(Rc<DxvkContext>& ctx, const VkExtent3D& downscaledExtent, const VkExtent3D& targetExtent) {
     ScopedCpuProfileZone();

@@ -32,10 +32,12 @@
 #include "dxvk_raytracing.h"
 #include "rtx_debug_view.h"
 #include "../dxvk_early_trace.h"
+#include "../../d3d11/d3d11_trace.h"
 
 namespace dxvk {
   RtxInitializer::RtxInitializer(DxvkDevice* device)
   : CommonDeviceObject(device) { 
+    D3D11EarlyTrace("RtxInitializer::RtxInitializer enter");
   }
 
   void RtxInitializer::initialize() {
@@ -109,7 +111,10 @@ namespace dxvk {
     DxvkEarlyTrace("RtxInitializer::initialize shader prewarm started");
 
     // Load assets (if any) as early as possible
-    if (RtxOptions::asyncAssetLoading()) {
+    const bool isD3D11Remix = m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false);
+    const bool useAsyncAssetLoading = RtxOptions::asyncAssetLoading() && !isD3D11Remix;
+
+    if (useAsyncAssetLoading) {
       // Async asset loading (USD)
       DxvkEarlyTrace("RtxInitializer::initialize async asset loading start");
       m_asyncAssetLoadThread = dxvk::thread([this] {
@@ -118,6 +123,9 @@ namespace dxvk {
       });
       DxvkEarlyTrace("RtxInitializer::initialize async asset loading thread created");
     } else {
+      if (isD3D11Remix && RtxOptions::asyncAssetLoading()) {
+        DxvkEarlyTrace("RtxInitializer::initialize forcing sync asset loading for D3D11 Remix path");
+      }
       DxvkEarlyTrace("RtxInitializer::initialize sync asset loading start");
       loadAssets();
       DxvkEarlyTrace("RtxInitializer::initialize sync asset loading complete");

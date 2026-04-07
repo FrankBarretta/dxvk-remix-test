@@ -3028,6 +3028,7 @@ namespace dxvk {
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
           IDXGIOutput*            pRestrictToOutput,
           IDXGISwapChain1**       ppSwapChain) {
+      D3D11EarlyTrace("WineDXGISwapChainFactory::CreateSwapChainForHwnd enter");
     InitReturnPtr(ppSwapChain);
     
     if (!ppSwapChain || !pDesc || !hWnd)
@@ -3057,13 +3058,16 @@ namespace dxvk {
       // Create presenter for the device
       Com<D3D11SwapChain> presenter = new D3D11SwapChain(
         m_container, m_device, hWnd, &desc);
+      D3D11EarlyTrace("WineDXGISwapChainFactory::CreateSwapChainForHwnd presenter created");
       
       // Create the actual swap chain
       *ppSwapChain = ref(new DxgiSwapChain(
         pFactory, presenter.ptr(), hWnd, &desc, &fsDesc));
+      D3D11EarlyTrace("WineDXGISwapChainFactory::CreateSwapChainForHwnd complete");
       return S_OK;
     } catch (const DxvkError& e) {
       Logger::err(e.message());
+      D3D11EarlyTrace("WineDXGISwapChainFactory::CreateSwapChainForHwnd failed with DxvkError");
       return E_INVALIDARG;
     }
   }
@@ -3136,6 +3140,25 @@ namespace dxvk {
       return E_POINTER;
 
     *ppvObject = nullptr;
+
+    if (riid == __uuidof(IWineDXGISwapChainFactory)) {
+      D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface IWineDXGISwapChainFactory");
+    } else if (riid == __uuidof(IDXGIDevice)
+            || riid == __uuidof(IDXGIDevice1)
+            || riid == __uuidof(IDXGIDevice2)
+            || riid == __uuidof(IDXGIDevice3)
+            || riid == __uuidof(IDXGIDevice4)) {
+      D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface IDXGIDevice*");
+    } else if (riid == __uuidof(ID3D11Device)
+            || riid == __uuidof(ID3D11Device1)
+            || riid == __uuidof(ID3D11Device2)
+            || riid == __uuidof(ID3D11Device3)
+            || riid == __uuidof(ID3D11Device4)
+            || riid == __uuidof(ID3D11Device5)) {
+      D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface ID3D11Device*");
+    } else if (riid == __uuidof(ID3D10Multithread)) {
+      D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface ID3D10Multithread");
+    }
     
     if (riid == __uuidof(IUnknown)
      || riid == __uuidof(IDXGIObject)
@@ -3204,6 +3227,7 @@ namespace dxvk {
     if (riid == GUID{0xd56e2a4c,0x5127,0x8437,{0x65,0x8a,0x98,0xc5,0xbb,0x78,0x94,0x98}})
       return E_NOINTERFACE;
     
+    D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface unknown interface");
     Logger::warn("D3D11DXGIDevice::QueryInterface: Unknown interface query");
     Logger::warn(str::format(riid));
     return E_NOINTERFACE;

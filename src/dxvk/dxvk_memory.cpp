@@ -24,6 +24,7 @@
 
 #include "dxvk_device.h"
 #include "dxvk_memory.h"
+#include "../d3d11/d3d11_trace.h"
 
 namespace dxvk {
 
@@ -364,6 +365,7 @@ DxvkMemory::DxvkMemory() { }
     m_device          (device),
     m_devProps        (device->adapter()->deviceProperties()),
     m_memProps        (device->adapter()->memoryProperties()) {
+    D3D11EarlyTrace("DxvkMemoryAllocator::DxvkMemoryAllocator enter");
     for (uint32_t i = 0; i < m_memProps.memoryHeapCount; i++) {
       m_memHeaps[i].properties = m_memProps.memoryHeaps[i];
       m_memHeaps[i].budget     = 0;

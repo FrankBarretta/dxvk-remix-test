@@ -65,11 +65,27 @@
 #include "dxvk_memory_tracker.h"
 #include "rtx_render/rtx_particle_system.h"
 #include "rtx_render/rtx_overlay_window.h"
+#include "../../d3d11/d3d11_trace.h"
 
 
 namespace dxvk {
   extern size_t g_streamedTextures_budgetBytes;
   extern size_t g_streamedTextures_usedBytes;
+}
+
+namespace {
+  bool shouldUseOverlayInputWindow(const dxvk::Rc<dxvk::DxvkDevice>& device) {
+    if (!dxvk::RtxOptions::useNewGuiInputMethod()) {
+      return false;
+    }
+
+    if (device != nullptr && device->instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
+      dxvk::Logger::info("ImGUI: disabling threaded overlay input window for D3D11 Remix");
+      return false;
+    }
+
+    return true;
+  }
 }
 
 
@@ -680,6 +696,7 @@ namespace dxvk {
   , m_about  (new ImGuiAbout)
   , m_splash  (new ImGuiSplash)
   , m_graphGUI  (new RtxGraphGUI) {
+    D3D11EarlyTrace("ImGUI::ImGUI enter");
     // Set up constant state
     m_rsState.polygonMode       = VK_POLYGON_MODE_FILL;
     m_rsState.cullMode          = VK_CULL_MODE_BACK_BIT;
@@ -700,10 +717,19 @@ namespace dxvk {
                                 | VK_COLOR_COMPONENT_G_BIT
                                 | VK_COLOR_COMPONENT_B_BIT
                                 | VK_COLOR_COMPONENT_A_BIT;
-    
-    // the size of the pool is oversized, but it's copied from imgui demo itself.
-    VkDescriptorPoolSize pool_sizes[] =
-    {
+
+    D3D11EarlyTrace("ImGUI::ImGUI deferring core init");
+  }
+
+  void ImGUI::ensureCoreInitialized() {
+    if (m_context != nullptr) {
+      return;
+    }
+
+    D3D11EarlyTrace("ImGUI::ensureCoreInitialized enter");
+
+    // The size of the pool is oversized, but it's copied from the ImGui demo itself.
+    VkDescriptorPoolSize pool_sizes[] = {
       { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
       { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
       { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
@@ -720,23 +746,22 @@ namespace dxvk {
     VkDescriptorPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    // ImGUI is currently using a single set per texture, and so we want this to be a big number 
-    //  to support displaying texture lists in games that use a lot of textures.
-    // See: 'ImGui_ImplVulkan_AddTexture(...)' for more details about how this system works.
     pool_info.maxSets = 10000;
     pool_info.poolSizeCount = std::size(pool_sizes);
     pool_info.pPoolSizes = pool_sizes;
 
-    if (!NeuralRadianceCache::checkIsSupported(device)) {
+    if (!NeuralRadianceCache::checkIsSupported(m_device)) {
       // Remove unsupported option
       integrateIndirectModeCombo.removeComboEntry(IntegrateIndirectMode::NeuralRadianceCache);
     }
 
     m_device->vkd()->vkCreateDescriptorPool(m_device->handle(), &pool_info, nullptr, &m_imguiPool);
+    D3D11EarlyTrace("ImGUI::ensureCoreInitialized descriptor pool ready");
 
     // Initialize the core structures of ImGui and ImPlot
     m_context = ImGui::CreateContext();
     m_plotContext = ImPlot::CreateContext();
+    D3D11EarlyTrace("ImGUI::ensureCoreInitialized contexts ready");
 
     ImGui::SetCurrentContext(m_context);
     ImPlot::SetCurrentContext(m_plotContext);
@@ -749,17 +774,24 @@ namespace dxvk {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
     m_capture = new ImGuiCapture(this);
+    D3D11EarlyTrace("ImGUI::ensureCoreInitialized capture ready");
 
-    if (RtxOptions::useNewGuiInputMethod()) {
+    if (shouldUseOverlayInputWindow(m_device)) {
       m_overlayWin = new GameOverlay(L"RemixGuiInputSink", this);
     }
+    D3D11EarlyTrace("ImGUI::ensureCoreInitialized complete");
   }
 
   ImGUI::~ImGUI() {
     g_imguiTextureMap.clear();
 
-    ImGui::SetCurrentContext(m_context);
-    ImPlot::SetCurrentContext(m_plotContext);
+    if (m_context != nullptr) {
+      ImGui::SetCurrentContext(m_context);
+    }
+
+    if (m_plotContext != nullptr) {
+      ImPlot::SetCurrentContext(m_plotContext);
+    }
 
     if(m_init) {
       ImGui_ImplWin32_Shutdown();
@@ -781,8 +813,15 @@ namespace dxvk {
     }
 
     // Destroy the ImGui and ImPlot context
-    ImPlot::DestroyContext(m_plotContext);
-    ImGui::DestroyContext(m_context);
+    if (m_plotContext != nullptr) {
+      ImPlot::DestroyContext(m_plotContext);
+      m_plotContext = nullptr;
+    }
+
+    if (m_context != nullptr) {
+      ImGui::DestroyContext(m_context);
+      m_context = nullptr;
+    }
   }
   
   void ImGUI::AddTexture(const XXH64_hash_t hash, const Rc<DxvkImageView>& imageView, uint32_t textureFeatureFlags) {
@@ -4624,6 +4663,8 @@ namespace dxvk {
     VkExtent2D         surfaceSize,
     bool               vsync) {
     ScopedGpuProfileZone(ctx, "ImGUI Render");
+
+    ensureCoreInitialized();
 
     if (m_overlayWin.ptr() != nullptr) {
       m_overlayWin->update(gameHwnd);

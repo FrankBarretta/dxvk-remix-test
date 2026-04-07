@@ -1,4 +1,5 @@
 #include "dxvk_device.h"
+#include "../d3d11/d3d11_trace.h"
 
 namespace dxvk {
   
@@ -11,7 +12,7 @@ namespace dxvk {
     m_image3D       (createImage(dev, VK_IMAGE_TYPE_3D, 1)),
     m_viewsSampled  (createImageViews(dev, VK_FORMAT_R32_SFLOAT)),
     m_viewsStorage  (createImageViews(dev, VK_FORMAT_R32_UINT)) {
-    
+    D3D11EarlyTrace("DxvkUnboundResources::DxvkUnboundResources enter");
   }
   
   

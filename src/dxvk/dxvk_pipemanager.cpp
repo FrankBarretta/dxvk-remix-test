@@ -22,6 +22,7 @@
 #include "dxvk_device.h"
 #include "dxvk_pipemanager.h"
 #include "dxvk_state_cache.h"
+#include "../d3d11/d3d11_trace.h"
 
 namespace dxvk {
   
@@ -30,6 +31,7 @@ namespace dxvk {
           DxvkRenderPassPool* passManager)
   : m_device    (device),
     m_cache     (new DxvkPipelineCache(device->vkd())) {
+    D3D11EarlyTrace("DxvkPipelineManager::DxvkPipelineManager enter");
     std::string useStateCache = env::getEnvVar("DXVK_STATE_CACHE");
     
     if (useStateCache != "0" && device->config().enableStateCache)

@@ -6,9 +6,10 @@ namespace dxvk {
   
   D3D11Options::D3D11Options(const Config& config, const Rc<DxvkDevice>& device) {
     const DxvkDeviceInfo& devInfo = device->properties();
+    const bool enableRemix = config.getOption<bool>("d3d11.enableRemix", false);
 
-    this->enableRemix           = config.getOption<bool>("d3d11.enableRemix", false);
-    this->useRtxContext         = config.getOption<bool>("d3d11.useRtxContext", false);
+    this->enableRemix           = enableRemix;
+    this->useRtxContext         = config.getOption<bool>("d3d11.useRtxContext", enableRemix);
     this->dcSingleUseMode       = config.getOption<bool>("d3d11.dcSingleUseMode", true);
     this->enableRtOutputNanFixup   = config.getOption<bool>("d3d11.enableRtOutputNanFixup", false);
     this->zeroInitWorkgroupMemory  = config.getOption<bool>("d3d11.zeroInitWorkgroupMemory", false);
