@@ -1197,8 +1197,22 @@ namespace dxvk {
       D3D11EarlyTrace("D3D11Rtx::EndFrame enter");
 
     if (useAuxiliarySceneCaptureOnly) {
+      auto logAuxiliaryInjectProbeStep = [useAuxiliaryInjectRtxProbe](const char* step) {
+        if (useAuxiliaryInjectRtxProbe) {
+          Logger::warn(str::format("D3D11: Auxiliary injectRTX probe ", step, "."));
+        }
+      };
+
+      logAuxiliaryInjectProbeStep("before Flush");
+
       context->Flush();
+
+      logAuxiliaryInjectProbeStep("after Flush");
+      logAuxiliaryInjectProbeStep("before pre-Emit SynchronizeRtxCs");
+
       SynchronizeRtxCs();
+
+      logAuxiliaryInjectProbeStep("after pre-Emit SynchronizeRtxCs");
 
       if (useAuxiliaryFullEndFrame) {
         if (!useAuxiliaryInjectRtxProbe && !m_loggedAuxiliaryFullEndFrameWarning) {
@@ -1224,17 +1238,30 @@ namespace dxvk {
           if (traceFrame)
             D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary full CS begin");
 
+          if (useAuxiliaryInjectRtxProbe)
+            Logger::warn("D3D11: Auxiliary injectRTX probe CS begin.");
+
           RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::EndFrame auxiliary full end frame skipped because the command stream is not using an RTX context");
           if (rtxContext == nullptr)
             return;
 
+          if (useAuxiliaryInjectRtxProbe)
+            Logger::warn("D3D11: Auxiliary injectRTX probe before rtxContext->endFrame.");
+
           rtxContext->endFrame(currentReflexFrameId, targetImage, useAuxiliaryInjectRtxProbe);
+
+          if (useAuxiliaryInjectRtxProbe)
+            Logger::warn("D3D11: Auxiliary injectRTX probe after rtxContext->endFrame.");
 
           if (traceFrame)
             D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary full CS after rtxContext->endFrame");
         };
 
+        logAuxiliaryInjectProbeStep("before EmitRtxCs");
+
         EmitRtxCs(std::move(emitAuxiliaryFullEndFrame));
+
+        logAuxiliaryInjectProbeStep("after EmitRtxCs");
       } else {
         if (!m_loggedAuxiliarySceneCaptureEndFrameWarning) {
           m_loggedAuxiliarySceneCaptureEndFrameWarning = true;
@@ -1258,7 +1285,11 @@ namespace dxvk {
         EmitRtxCs(std::move(emitSceneCaptureOnlyEndFrame));
       }
 
+      logAuxiliaryInjectProbeStep("before post-Emit SynchronizeRtxCs");
+
       SynchronizeRtxCs();
+
+      logAuxiliaryInjectProbeStep("after post-Emit SynchronizeRtxCs");
 
       m_geometryCaptureFaultedThisFrame.store(false, std::memory_order_relaxed);
       m_hasProjectionMatrixThisFrame.store(false, std::memory_order_relaxed);

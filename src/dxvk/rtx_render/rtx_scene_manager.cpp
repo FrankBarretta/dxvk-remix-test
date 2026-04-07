@@ -1513,6 +1513,22 @@ namespace dxvk {
   void SceneManager::prepareSceneData(Rc<RtxContext> ctx, DxvkBarrierSet& execBarriers) {
     ScopedGpuProfileZone(ctx, "Build Scene");
 
+    auto tracePrepareSceneDataStage = [&ctx](const char* stage) {
+      if (ctx != nullptr && ctx->isD3D11RemixEnabled()) {
+        const std::string message = str::format("SceneManager::prepareSceneData ", stage);
+        D3D11EarlyTrace(message.c_str());
+      }
+    };
+
+    auto logPrepareSceneDataStage = [&ctx](const char* stage) {
+      if (ctx != nullptr && ctx->isD3D11InjectProbeActive()) {
+        Logger::warn(str::format("D3D11: SceneManager::prepareSceneData ", stage, "."));
+      }
+    };
+
+    tracePrepareSceneDataStage("enter");
+    logPrepareSceneDataStage("enter");
+
   #ifdef REMIX_DEVELOPMENT
     if (m_device->getCurrentFrameId() == RtxOptions::dumpAllInstancesOnFrame()) {
       // Print all RtInstances for debugging
@@ -1522,24 +1538,38 @@ namespace dxvk {
 
     // Needs to happen before garbageCollection to avoid destroying dynamic lights
     m_lightManager.dynamicLightMatching();
+    tracePrepareSceneDataStage("after dynamic-light-matching");
+    logPrepareSceneDataStage("after dynamic-light-matching");
 
     garbageCollection();
+    tracePrepareSceneDataStage("after garbage-collection");
+    logPrepareSceneDataStage("after garbage-collection");
 
     m_graphManager.applySceneOverrides(ctx);
+    tracePrepareSceneDataStage("after scene-overrides");
+    logPrepareSceneDataStage("after scene-overrides");
 
     m_terrainBaker->prepareSceneData(ctx);
+    tracePrepareSceneDataStage("after terrain-baker");
+    logPrepareSceneDataStage("after terrain-baker");
 
     auto& textureManager = m_device->getCommon()->getTextureManager();
     m_bindlessResourceManager.prepareSceneData(ctx, textureManager.getTextureTable(), getBufferTable(), getSamplerTable());
+    tracePrepareSceneDataStage("after bindless-resource-prepare");
+    logPrepareSceneDataStage("after bindless-resource-prepare");
 
     // If there are no instances, we should do nothing!
     if (m_instanceManager.getActiveCount() == 0) {
       // Clear the ray portal data before the next frame
       m_rayPortalManager.clear();
+      tracePrepareSceneDataStage("no-active-instances");
+      logPrepareSceneDataStage("no-active-instances");
       return;
     }
 
     m_rayPortalManager.prepareSceneData(ctx);
+    tracePrepareSceneDataStage("after ray-portal-prepare");
+    logPrepareSceneDataStage("after ray-portal-prepare");
     // Note: only main camera needs to be teleportation corrected as only that one is used for ray tracing & denoising
     m_rayPortalManager.fixCameraInBetweenPortals(m_cameraManager.getCamera(CameraType::Main));
     m_rayPortalManager.fixCameraInBetweenPortals(m_cameraManager.getCamera(CameraType::ViewModel));
@@ -1555,9 +1585,22 @@ namespace dxvk {
         m_enqueueDelayedClear = true;
       }
     }
+    tracePrepareSceneDataStage("after camera-history-fixups");
+    logPrepareSceneDataStage("after camera-history-fixups");
+
+    const bool skipOpacityMicromapForD3D11Remix = ctx != nullptr && ctx->isD3D11RemixEnabled();
 
     // Initialize/remove opacity micromap manager
-    if (RtxOptions::getEnableOpacityMicromap()) {
+    if (skipOpacityMicromapForD3D11Remix) {
+      if (ctx->isD3D11InjectProbeActive()) {
+        Logger::warn("D3D11: SceneManager::prepareSceneData skipping opacity-micromap on the experimental D3D11 Remix path.");
+      }
+
+      if (m_opacityMicromapManager.get()) {
+        m_instanceManager.removeEventHandler(m_opacityMicromapManager.get());
+        m_opacityMicromapManager = nullptr;
+      }
+    } else if (RtxOptions::getEnableOpacityMicromap()) {
       if (!m_opacityMicromapManager.get() || 
           // Reset the manager on camera cuts
           m_enqueueDelayedClear) {
@@ -1573,22 +1616,36 @@ namespace dxvk {
       m_opacityMicromapManager = nullptr;
       Logger::info("[RTX] Opacity Micromap: disabled");
     }
+    tracePrepareSceneDataStage("after opacity-micromap");
+    logPrepareSceneDataStage("after opacity-micromap");
 
     RtxParticleSystemManager& particles = m_device->getCommon()->metaParticleSystem();
     particles.simulate(ctx.ptr());
+    tracePrepareSceneDataStage("after particle-simulate");
+    logPrepareSceneDataStage("after particle-simulate");
 
     m_instanceManager.findPortalForVirtualInstances(m_cameraManager, m_rayPortalManager);
     m_instanceManager.createViewModelInstances(ctx, m_cameraManager, m_rayPortalManager);
     m_instanceManager.createPlayerModelVirtualInstances(ctx, m_cameraManager, m_rayPortalManager);
+    tracePrepareSceneDataStage("after virtual-instance-setup");
+    logPrepareSceneDataStage("after virtual-instance-setup");
 
     m_accelManager.mergeInstancesIntoBlas(ctx, execBarriers, textureManager.getTextureTable(), m_cameraManager, m_instanceManager, m_opacityMicromapManager.get());
+    tracePrepareSceneDataStage("after merge-instances-into-blas");
+    logPrepareSceneDataStage("after merge-instances-into-blas");
 
     // Call on the other managers to prepare their GPU data for the current scene
     m_accelManager.prepareSceneData(ctx, execBarriers, m_instanceManager);
+    tracePrepareSceneDataStage("after accel-manager-prepare");
+    logPrepareSceneDataStage("after accel-manager-prepare");
     m_lightManager.prepareSceneData(ctx, m_cameraManager);
+    tracePrepareSceneDataStage("after light-manager-prepare");
+    logPrepareSceneDataStage("after light-manager-prepare");
 
     // Build the TLAS
     m_accelManager.buildTlas(ctx);
+    tracePrepareSceneDataStage("after build-tlas");
+    logPrepareSceneDataStage("after build-tlas");
 
     // Todo: These updates require a lot of temporary buffer allocations and memcopies, ideally we should memcpy directly into a mapped pointer provided by Vulkan,
     // but we have to create a buffer to pass to DXVK's updateBuffer for now.
@@ -1634,6 +1691,7 @@ namespace dxvk {
         assert(surfaceMaterialsGPUData.size() == surfaceMaterialsGPUSize);
 
         ctx->writeToBuffer(m_surfaceMaterialBuffer, 0, surfaceMaterialsGPUData.size(), surfaceMaterialsGPUData.data());
+        tracePrepareSceneDataStage("after surface-material-buffer");
       }
 
       // Surface Material Extension Buffer
@@ -1660,6 +1718,7 @@ namespace dxvk {
         assert(surfaceMaterialExtensionsGPUData.size() == surfaceMaterialExtensionsGPUSize);
 
         ctx->writeToBuffer(m_surfaceMaterialExtensionBuffer, 0, surfaceMaterialExtensionsGPUData.size(), surfaceMaterialExtensionsGPUData.data());
+        tracePrepareSceneDataStage("after surface-material-extension-buffer");
       }
 
       // Volume Material buffer
@@ -1684,6 +1743,7 @@ namespace dxvk {
         assert(volumeMaterialsGPUData.size() == volumeMaterialsGPUSize);
 
         ctx->writeToBuffer(m_volumeMaterialBuffer, 0, volumeMaterialsGPUData.size(), volumeMaterialsGPUData.data());
+        tracePrepareSceneDataStage("after volume-material-buffer");
       }
     }
 
@@ -1692,6 +1752,7 @@ namespace dxvk {
       VK_ACCESS_TRANSFER_WRITE_BIT,
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
       VK_ACCESS_SHADER_READ_BIT);
+    tracePrepareSceneDataStage("after material-memory-barrier");
 
     // Update stats
     m_device->statCounters().setCtr(DxvkStatCounter::RtxBlasCount, AccelManager::getBlasCount());
@@ -1709,13 +1770,16 @@ namespace dxvk {
       capturer->triggerNewCapture();
     }
     capturer->step(ctx, ctx->getCommonObjects()->getLastKnownWindowHandle());
+    tracePrepareSceneDataStage("after capturer-step");
 
     // Clear the ray portal data before the next frame
     m_rayPortalManager.clear();
+    tracePrepareSceneDataStage("after ray-portal-clear");
 
     // Check Anti-Culling Support:
     // When the game doesn't set up the View Matrix, we must disable Anti-Culling to prevent visual corruption.
     m_isAntiCullingSupported = (getCamera().getViewToWorld() != Matrix4d());
+    tracePrepareSceneDataStage("complete");
   }
 
   static_assert(std::is_same_v< decltype(RtSurface::objectPickingValue), ObjectPickingValue>);

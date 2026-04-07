@@ -452,6 +452,12 @@ namespace dxvk {
 
     bool injectProbeTriggered = false;
 
+    auto logInjectProbeStep = [this](const char* step) {
+      if (m_isD3D11Remix && m_d3d11InjectRtxStageLimit > 0u) {
+        Logger::warn(str::format("D3D11: RtxContext::injectRTX ", step, "."));
+      }
+    };
+
     auto traceInjectStage = [this](const char* stage) {
       if (m_isD3D11Remix) {
         const std::string message = str::format("RtxContext::injectRTX ", stage);
@@ -481,6 +487,7 @@ namespace dxvk {
     };
 
     traceInjectStage("enter");
+    logInjectProbeStep("enter");
 
     if (RtxOptions::enableBreakIntoDebuggerOnPressingB() && ImGUI::checkHotkeyState({VirtualKey{ 'B' }}, true)) {
       while (!::IsDebuggerPresent()) {
@@ -489,8 +496,10 @@ namespace dxvk {
       __debugbreak();
     }
 
+    logInjectProbeStep("before commitGraphicsState");
     commitGraphicsState<true, false>();
     traceInjectStage("after commitGraphicsState");
+    logInjectProbeStep("after commitGraphicsState");
     if (stopAfterStage(1u, "after commitGraphicsState"))
       goto inject_probe_fallback;
 
@@ -518,6 +527,7 @@ namespace dxvk {
 
     m_device->setPresentThrottleDelay(computedPresentThrottleDelay);
     traceInjectStage("after present-throttle");
+    logInjectProbeStep("after present-throttle");
     if (stopAfterStage(2u, "after present-throttle"))
       goto inject_probe_fallback;
 
@@ -528,29 +538,37 @@ namespace dxvk {
       return;
     }
 
+    logInjectProbeStep("before already-injected check");
     if (m_frameLastInjected == m_device->getCurrentFrameId()) {
       return;
     }
     traceInjectStage("after already-injected check");
+    logInjectProbeStep("after already-injected check");
 
+    logInjectProbeStep("before camera-validity check");
     const bool isCameraValid = getSceneManager().getCamera().isValid(m_device->getCurrentFrameId());
     if (!isCameraValid) {
       ONCE(Logger::info(str::format("[RTX-Compatibility-Info] Trying to raytrace but not detecting a valid camera.")));
     }
     traceInjectStage(isCameraValid ? "camera-valid" : "camera-invalid");
+    logInjectProbeStep(isCameraValid ? "camera-valid" : "camera-invalid");
 
     // Update frame counter only after actual rendering
     if (isCameraValid) {
       m_frameLastInjected = m_device->getCurrentFrameId();
     }
 
+    logInjectProbeStep("before dlss-support-check");
     if (RtxOptions::upscalerType() == UpscalerType::DLSS && !common->metaDLSS().supportsDLSS()) {
       RtxOptions::upscalerType.setDeferred(UpscalerType::TAAU);
     }
+    logInjectProbeStep("after dlss-support-check");
 
+    logInjectProbeStep("before dlfg-support-check");
     if (DxvkDLFG::enable() && !common->metaDLFG().supportsDLFG()) {
       DxvkDLFG::enable.setDeferred(false);
     }
+    logInjectProbeStep("after dlfg-support-check");
     traceInjectStage("after upscaler-validation");
     if (stopAfterStage(3u, "after upscaler-validation"))
       goto inject_probe_fallback;
@@ -563,14 +581,18 @@ namespace dxvk {
 
     const float gpuIdleTimeMilliseconds = getGpuIdleTimeSinceLastCall();
     traceInjectStage("after gpu-idle-sample");
+    logInjectProbeStep("after gpu-idle-sample");
 
     // Note: Only engage ray tracing when it is enabled, the camera is valid and when no shaders are currently being compiled asynchronously (as
     // trying to render before shaders are done compiling will cause Remix to block).
     if (isRaytracingEnabled && isCameraValid && !asyncShaderCompilationActive) {
+      logInjectProbeStep("before target-image-acquire");
       if (targetImage == nullptr) {
         targetImage = m_state.om.renderTargets.color[0].view->image();  
       }
       traceInjectStage("target-image-ready");
+      logInjectProbeStep("after target-image-acquire");
+      logInjectProbeStep("after target-image-ready");
       if (stopAfterStage(4u, "target-image-ready"))
         goto inject_probe_fallback;
 
@@ -582,6 +604,7 @@ namespace dxvk {
         s_triggerUsdCapture = false;
         m_common->capturer()->triggerNewCapture();
       }
+      logInjectProbeStep("after usd-capture-check");
 
       if (captureTestScreenshot) {
         Logger::info(str::format("RTX: Test screenshot capture triggered"));
@@ -598,19 +621,24 @@ namespace dxvk {
       if (captureScreenImage && captureDebugImage) {
         takeScreenshot("orgImage", targetImage);
       }
+      logInjectProbeStep("after screenshot-work");
 
       RtxParticleSystemManager& particles = m_device->getCommon()->metaParticleSystem();
       particles.submitDrawState(this);
       traceInjectStage("after particle-submit");
+      logInjectProbeStep("after particle-submit");
 
       this->spillRenderPass(false);
       traceInjectStage("after spill-render-pass");
+      logInjectProbeStep("after spill-render-pass");
 
       getCommonObjects()->getTextureManager().submitTexturesToDeviceLocal(this, m_execBarriers, m_execAcquires);
       traceInjectStage("after texture-submit");
+      logInjectProbeStep("after texture-submit");
 
       m_execBarriers.recordCommands(m_cmd);
       traceInjectStage("after barrier-record");
+      logInjectProbeStep("after barrier-record");
       if (stopAfterStage(5u, "after barrier-record"))
         goto inject_probe_fallback;
 
@@ -622,23 +650,30 @@ namespace dxvk {
 
       // Note: Update the Reflex mode in case the option has changed.
       reflex.updateMode();
+      logInjectProbeStep("after reflex-update-mode");
 
       m_submitContainsInjectRtx = true;
       m_cachedReflexFrameId = cachedReflexFrameId;
       traceInjectStage("after reflex-state");
+      logInjectProbeStep("after reflex-state");
 
       // Update all the GPU buffers needed to describe the scene
+      logInjectProbeStep("before prepare-scene-data");
       getSceneManager().prepareSceneData(this, m_execBarriers);
       traceInjectStage("after prepare-scene-data");
+      logInjectProbeStep("after prepare-scene-data");
       if (stopAfterStage(6u, "after prepare-scene-data"))
         goto inject_probe_fallback;
       
       // If we really don't have any RT to do, just bail early (could be UI/menus rendering)
       if (getSceneManager().getSurfaceBuffer() != nullptr) {
         traceInjectStage("surface-buffer-present");
+        logInjectProbeStep("surface-buffer-present");
 
+        logInjectProbeStep("before on-frame-begin");
         VkExtent3D downscaledExtent = onFrameBegin(targetImage->info().extent);
         traceInjectStage("after on-frame-begin");
+        logInjectProbeStep("after on-frame-begin");
         if (stopAfterStage(7u, "after on-frame-begin"))
           goto inject_probe_fallback;
 
@@ -654,20 +689,27 @@ namespace dxvk {
 
         getCommonObjects()->getTextureManager().prepareSamplerFeedback(this);
         traceInjectStage("after sampler-feedback-prepare");
+        logInjectProbeStep("after sampler-feedback-prepare");
 
         // Generate ray tracing constant buffer
+        logInjectProbeStep("before update-raytrace-args");
         updateRaytraceArgsConstantBuffer(rtOutput, downscaledExtent, targetImage->info().extent);
         traceInjectStage("after update-raytrace-args");
+        logInjectProbeStep("after update-raytrace-args");
         if (stopAfterStage(8u, "after update-raytrace-args"))
           goto inject_probe_fallback;
 
         // Volumetric Lighting
+        logInjectProbeStep("before volumetrics");
         dispatchVolumetrics(rtOutput);
         traceInjectStage("after volumetrics");
+        logInjectProbeStep("after volumetrics");
         
         // Path Tracing
+        logInjectProbeStep("before path-tracing");
         dispatchPathTracing(rtOutput);
         traceInjectStage("after path-tracing");
+        logInjectProbeStep("after path-tracing");
         if (stopAfterStage(9u, "after path-tracing"))
           goto inject_probe_fallback;
 
@@ -825,6 +867,7 @@ namespace dxvk {
           goto inject_probe_fallback;
       } else {
         traceInjectStage("surface-buffer-missing");
+        logInjectProbeStep("surface-buffer-missing");
       }
 
       m_previousInjectRtxHadScene = true;
@@ -864,12 +907,24 @@ namespace dxvk {
   }
 
   void RtxContext::endFrame(std::uint64_t cachedReflexFrameId, Rc<DxvkImage> targetImage, bool callInjectRtx) {
+    const bool logInjectProbe = m_isD3D11Remix && callInjectRtx && m_d3d11InjectRtxStageLimit > 0u;
+
+    if (logInjectProbe)
+      Logger::warn("D3D11: RtxContext::endFrame enter.");
+
     D3D11EarlyTrace("RtxContext::endFrame enter");
 
     if (callInjectRtx) {
       // Fallback inject (is a no-op if already injected this frame, or no valid RT scene)
+      if (logInjectProbe)
+        Logger::warn("D3D11: RtxContext::endFrame before injectRTX.");
+
       D3D11EarlyTrace("RtxContext::endFrame before injectRTX");
       injectRTX(cachedReflexFrameId, targetImage);
+
+      if (logInjectProbe)
+        Logger::warn("D3D11: RtxContext::endFrame after injectRTX.");
+
       D3D11EarlyTrace("RtxContext::endFrame after injectRTX");
     }
 
@@ -881,6 +936,10 @@ namespace dxvk {
 
     // Update time on the frame end so all other systems can benefit from a global time
     GlobalTime::get().update();
+
+    if (logInjectProbe)
+      Logger::warn("D3D11: RtxContext::endFrame complete.");
+
     D3D11EarlyTrace("RtxContext::endFrame complete");
   }
 

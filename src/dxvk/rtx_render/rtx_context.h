@@ -128,6 +128,14 @@ namespace dxvk {
 
     void bindResourceView(const uint32_t slot, const Rc<DxvkImageView>& imageView, const Rc<DxvkBufferView>& bufferView);
 
+    bool isD3D11RemixEnabled() const {
+      return m_isD3D11Remix;
+    }
+
+    bool isD3D11InjectProbeActive() const {
+      return m_isD3D11Remix && m_d3d11InjectRtxStageLimit > 0u;
+    }
+
     void getDenoiseArgs(NrdArgs& outPrimaryDirectNrdArgs, NrdArgs& outPrimaryIndirectNrdArgs, NrdArgs& outSecondaryNrdArgs);
     void updateRaytraceArgsConstantBuffer(Resources::RaytracingOutput& rtOutput, const VkExtent3D& downscaledExtent, const VkExtent3D& targetExtent);
 
