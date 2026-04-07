@@ -254,51 +254,69 @@ namespace dxvk {
 
   bool DrawCallState::finalizePendingFutures(const RtCamera* pLastCamera) {
     ScopedCpuProfileZone();
+    remixDebugCommitStage = 101;
     // Geometry hashes are vital, and cannot be disabled, so its important we get valid data (hence the return type)
     const bool valid = finalizeGeometryHashes();
     if (valid) {
+      remixDebugCommitStage = 102;
       // Bounding boxes (if enabled) will be finalized here, default is FLT_MAX bounds
       finalizeGeometryBoundingBox();
 
+      remixDebugCommitStage = 103;
       // Skinning processing will be finalized here, if object requires skinning
       finalizeSkinningData(pLastCamera);
 
+      remixDebugCommitStage = 104;
       // Update any categories that require geometry hash
       setupCategoriesForGeometry();
 
+      remixDebugCommitStage = 105;
       return true;
     }
 
+    remixDebugCommitStage = 106;
     return false;
   }
 
   bool DrawCallState::finalizeGeometryHashes() {
+    remixDebugCommitStage = 111;
     if (!geometryData.futureGeometryHashes.valid()) {
       return false;
     }
 
+    remixDebugCommitStage = 112;
     geometryData.hashes = geometryData.futureGeometryHashes.get();
 
+    remixDebugCommitStage = 113;
     if (geometryData.hashes[HashComponents::VertexPosition] == kEmptyHash) {
       throw DxvkError("Position hash should never be empty");
     }
 
+    remixDebugCommitStage = 114;
     return true;
   }
 
   void DrawCallState::finalizeGeometryBoundingBox() {
-    if (geometryData.futureBoundingBox.valid())
+    remixDebugCommitStage = 121;
+    if (geometryData.futureBoundingBox.valid()) {
+      remixDebugCommitStage = 122;
       geometryData.boundingBox = geometryData.futureBoundingBox.get();
+      remixDebugCommitStage = 123;
+    }
   }
 
   void DrawCallState::finalizeSkinningData(const RtCamera* pLastCamera) {
+    remixDebugCommitStage = 131;
     if (futureSkinningData.valid()) {
+      remixDebugCommitStage = 132;
       skinningData = futureSkinningData.get();
 
+      remixDebugCommitStage = 133;
       assert(geometryData.blendWeightBuffer.defined());
       assert(skinningData.numBonesPerVertex <= 4);
 
       if (pLastCamera != nullptr) {
+        remixDebugCommitStage = 134;
         const auto fusedMode = RtxOptions::fusedWorldViewMode();
         if (likely(fusedMode == FusedWorldViewMode::None)) {
           transformData.objectToView = transformData.worldToView;
@@ -307,12 +325,14 @@ namespace dxvk {
         transformData.objectToWorld = pLastCamera->getViewToWorld(false) * transformData.objectToView;
         transformData.worldToView = pLastCamera->getWorldToView(false);
       } else {
+        remixDebugCommitStage = 135;
         ONCE(Logger::warn("[RTX-Compatibility-Warn] Cannot decompose the matrices for a skinned mesh because the camera is not set."));
       }
 
       // In rare cases when the mesh is skinned but has only one active bone, skip the skinning pass
       // and bake that single bone into the objectToWorld/View matrices.
       if (skinningData.minBoneIndex + 1 == skinningData.numBones) {
+        remixDebugCommitStage = 136;
         const Matrix4& skinningMatrix = skinningData.pBoneMatrices[skinningData.minBoneIndex];
 
         transformData.objectToWorld = transformData.objectToWorld * skinningMatrix;
@@ -325,6 +345,7 @@ namespace dxvk {
 
       // Store the numBonesPerVertex in the RasterGeometry as well to allow it to be overridden
       geometryData.numBonesPerVertex = skinningData.numBonesPerVertex;
+      remixDebugCommitStage = 137;
     }
   }
 
@@ -377,8 +398,12 @@ namespace dxvk {
   }
 
   void DrawCallState::setupCategoriesForGeometry() {
+    remixDebugCommitStage = 141;
     const XXH64_hash_t assetReplacementHash = getHash(RtxOptions::geometryAssetHashRule());
+
+    remixDebugCommitStage = 142;
     setCategory(InstanceCategories::Sky, lookupHash(RtxOptions::skyBoxGeometries(), assetReplacementHash));
+    remixDebugCommitStage = 143;
   }
 
   static std::optional<Vector3> makeCameraPosition(const Matrix4& worldToView,

@@ -445,6 +445,52 @@ namespace dxvk {
           return "not-entered";
         case 1:
           return "entered";
+        case 101:
+          return "finalize-pending-futures-entered";
+        case 102:
+          return "geometry-hashes-finalized";
+        case 103:
+          return "bounding-box-finalized";
+        case 104:
+          return "skinning-finalized";
+        case 105:
+          return "geometry-categories-finalized";
+        case 106:
+          return "geometry-hashes-invalid";
+        case 111:
+          return "geometry-hashes-check-valid";
+        case 112:
+          return "geometry-hashes-get";
+        case 113:
+          return "geometry-hashes-validated";
+        case 114:
+          return "geometry-hashes-complete";
+        case 121:
+          return "bounding-box-check-valid";
+        case 122:
+          return "bounding-box-get";
+        case 123:
+          return "bounding-box-complete";
+        case 131:
+          return "skinning-check-valid";
+        case 132:
+          return "skinning-get";
+        case 133:
+          return "skinning-validated";
+        case 134:
+          return "skinning-camera-transform";
+        case 135:
+          return "skinning-no-camera";
+        case 136:
+          return "skinning-single-bone-fold";
+        case 137:
+          return "skinning-complete";
+        case 141:
+          return "geometry-category-hash";
+        case 142:
+          return "geometry-category-lookup";
+        case 143:
+          return "geometry-category-complete";
         case 2:
           return "futures-finalized";
         case 3:
