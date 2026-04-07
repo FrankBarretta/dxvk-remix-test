@@ -119,14 +119,16 @@ namespace dxvk {
     bool m_loggedAuxiliaryPilotFilterWarning = false;
     bool m_loggedAuxiliaryPilotThrottleWarning = false;
     bool m_loggedAuxiliaryPilotCompletedWarning = false;
+    bool m_loggedAuxiliaryPilotResetWarning = false;
     bool m_loggedAuxiliaryBackendFaultWarning = false;
     std::atomic<bool> m_geometryCaptureFaultedThisFrame = false;
     std::atomic<bool> m_auxiliaryBackendFaulted = false;
-    std::atomic<bool> m_auxiliaryPilotCompleted = false;
+    std::atomic<bool> m_auxiliaryPilotResetPending = false;
     std::atomic<bool> m_hasProjectionMatrixThisFrame = false;
     std::atomic<bool> m_hasSeenProjectionMatrix = false;
     std::atomic<bool> m_hasSeenObjectToViewMatrix = false;
     std::atomic<uint32_t> m_auxiliaryPilotCapturesThisFrame = 0;
+    std::atomic<uint32_t> m_auxiliaryPilotSuccessfulCaptures = 0;
     std::atomic<uint32_t> m_geometryCaptureFaultCount = 0;
     uint64_t m_reflexFrameId = 0;
     uint64_t m_lastAuxiliaryPilotCaptureFrame = UINT64_MAX;

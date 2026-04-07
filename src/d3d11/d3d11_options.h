@@ -21,6 +21,14 @@ namespace dxvk {
     /// immediate context instead of the stable fallback.
     bool useRtxContext;
 
+    /// Limits how often the auxiliary D3D11 Remix pilot
+    /// is allowed to submit supported geometry captures.
+    int32_t remixPilotCaptureInterval;
+
+    /// Caps the total number of successful auxiliary D3D11
+    /// Remix pilot captures before returning to telemetry-only.
+    int32_t remixPilotMaxSuccessfulCaptures;
+
     /// Enables speed hack for mapping on deferred contexts
     ///
     /// This can substantially speed up some games, but may

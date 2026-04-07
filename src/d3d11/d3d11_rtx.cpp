@@ -24,7 +24,6 @@ namespace dxvk {
 
   namespace {
     constexpr uint32_t kGeometryFaultLogInterval = 256u;
-    constexpr uint64_t kAuxiliaryPilotCaptureFrameInterval = 120u;
 
     struct D3D11RtxResolvedAttribute {
       DxvkVertexAttribute attribute;
@@ -711,14 +710,35 @@ namespace dxvk {
     if (!m_enabled || m_geometryCaptureFaultedThisFrame.load(std::memory_order_relaxed))
       return;
 
-    if (!m_parent->UsesImmediateContextRtx()
-     && m_auxiliaryPilotCompleted.load(std::memory_order_relaxed)) {
+    const bool usingAuxiliaryPilot = !m_parent->UsesImmediateContextRtx();
+    const uint32_t successfulPilotCaptures = m_auxiliaryPilotSuccessfulCaptures.load(std::memory_order_relaxed);
+    const uint32_t maxSuccessfulPilotCaptures = static_cast<uint32_t>(std::max(0, m_parent->GetOptions()->remixPilotMaxSuccessfulCaptures));
+
+    if (usingAuxiliaryPilot && successfulPilotCaptures >= maxSuccessfulPilotCaptures) {
       if (!m_loggedAuxiliaryPilotCompletedWarning) {
         m_loggedAuxiliaryPilotCompletedWarning = true;
-        Logger::warn("D3D11: Auxiliary Remix pilot already completed one successful capture; further DX11 geometry capture is disabled to preserve performance.");
+        Logger::warn("D3D11: Auxiliary Remix pilot reached its configured successful-capture limit; further DX11 geometry capture is disabled to preserve performance.");
       }
 
       return;
+    }
+
+    if (usingAuxiliaryPilot && successfulPilotCaptures > 0u) {
+      const uint64_t pilotCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotCaptureInterval));
+
+      if (pilotCaptureFrameInterval > 0u
+       && m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX
+       && m_reflexFrameId < m_lastAuxiliaryPilotCaptureFrame + pilotCaptureFrameInterval) {
+        if (!m_loggedAuxiliaryPilotThrottleWarning) {
+          m_loggedAuxiliaryPilotThrottleWarning = true;
+          Logger::warn(str::format(
+            "D3D11: Throttling the auxiliary Remix pilot to one supported draw every ",
+            pilotCaptureFrameInterval,
+            " frames while frame hooks remain disabled to avoid severe frame-time collapse."));
+        }
+
+        return;
+      }
     }
 
     if (!CanUseRtxExecutionContext()
@@ -728,6 +748,18 @@ namespace dxvk {
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (!m_parent->UsesImmediateContextRtx()
+     && m_auxiliaryPilotResetPending.exchange(false, std::memory_order_relaxed)) {
+      SynchronizeRtxCs();
+      m_rtxCsThread = nullptr;
+      m_rtxContext = nullptr;
+
+      if (!m_loggedAuxiliaryPilotResetWarning) {
+        m_loggedAuxiliaryPilotResetWarning = true;
+        Logger::warn("D3D11: Resetting the auxiliary RTX context between successful pilot captures to avoid persistent frame-time collapse.");
+      }
+    }
 
     const auto inferredTransforms = inferTransformsFromVsConstants(context->m_state.vs);
 
@@ -793,6 +825,7 @@ namespace dxvk {
       return;
 
     if (!m_parent->UsesImmediateContextRtx()) {
+      const uint64_t pilotCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotCaptureInterval));
       const bool supportedPilotDraw = resolvedDrawContext.indexed
         && resolvedDrawContext.instanceCount <= 1u
         && vkTopology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -809,13 +842,14 @@ namespace dxvk {
       if (m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) >= 1u)
         return;
 
-      if (m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX
-       && m_reflexFrameId < m_lastAuxiliaryPilotCaptureFrame + kAuxiliaryPilotCaptureFrameInterval) {
+      if (pilotCaptureFrameInterval > 0u
+       && m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX
+       && m_reflexFrameId < m_lastAuxiliaryPilotCaptureFrame + pilotCaptureFrameInterval) {
         if (!m_loggedAuxiliaryPilotThrottleWarning) {
           m_loggedAuxiliaryPilotThrottleWarning = true;
           Logger::warn(str::format(
             "D3D11: Throttling the auxiliary Remix pilot to one supported draw every ",
-            kAuxiliaryPilotCaptureFrameInterval,
+            pilotCaptureFrameInterval,
             " frames while frame hooks remain disabled to avoid severe frame-time collapse."));
         }
 
@@ -1064,7 +1098,8 @@ namespace dxvk {
 
       if (TryCommitGeometryToRt(rtxContext, params, drawCallState)) {
         if (!m_parent->UsesImmediateContextRtx()) {
-          m_auxiliaryPilotCompleted.store(true, std::memory_order_relaxed);
+          m_auxiliaryPilotSuccessfulCaptures.fetch_add(1u, std::memory_order_relaxed);
+          m_auxiliaryPilotResetPending.store(true, std::memory_order_relaxed);
         }
 
         m_geometryCaptureFaultCount.store(0u, std::memory_order_relaxed);
