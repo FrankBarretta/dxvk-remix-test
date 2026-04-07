@@ -127,8 +127,9 @@ namespace dxvk {
     void SubmitPresent(
             D3D11ImmediateContext*  pContext,
       const vk::PresenterSync&      Sync,
-                uint32_t                FrameId,
-                uint32_t                ImageIndex);
+                    uint32_t                FrameId,
+                    uint32_t                ImageIndex,
+                    bool                    useRemixPresentPath);
 
     void SynchronizePresent();
 

@@ -19,13 +19,15 @@ namespace dxvk {
       const Rc<DxvkDevice>&   device) {
       if (parent->GetOptions()->enableRemix
        && parent->GetOptions()->useRtxContext) {
-        parent->SetImmediateContextUsesRtx(true);
-        D3D11EarlyTrace("D3D11ImmediateContext using RTX context for experimental DX11 Remix path");
-        return static_cast<Rc<DxvkContext>>(device->createRtxContext());
+        parent->SetImmediateContextUsesRtx(false);
+        Logger::warn("D3D11: Using standard DXVK immediate context; the auxiliary RTX command stream will be armed only after required transforms are discovered.");
+        D3D11EarlyTrace("D3D11ImmediateContext using standard DXVK context; auxiliary RTX command stream is deferred until transforms are discovered for experimental DX11 Remix path");
+        return device->createContext();
       }
 
       if (parent->GetOptions()->enableRemix) {
         parent->SetImmediateContextUsesRtx(false);
+        Logger::warn("D3D11: Using standard DXVK immediate context because d3d11.useRtxContext is disabled.");
         D3D11EarlyTrace("D3D11ImmediateContext using standard DXVK context for experimental DX11 Remix path");
       } else {
         parent->SetImmediateContextUsesRtx(false);

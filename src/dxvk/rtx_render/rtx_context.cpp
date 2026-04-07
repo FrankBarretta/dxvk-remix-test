@@ -196,8 +196,8 @@ namespace dxvk {
 
     DxvkEarlyTrace("RtxContext::RtxContext running time initialized");
 
-    const bool isD3D11Remix = m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false);
-    if (isD3D11Remix) {
+    m_isD3D11Remix = m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false);
+    if (m_isD3D11Remix) {
       DxvkEarlyTrace("RtxContext::RtxContext skipping checkOpacityMicromapSupport for D3D11 Remix");
     } else {
       DxvkEarlyTrace("RtxContext::RtxContext checkOpacityMicromapSupport enter");
@@ -2098,6 +2098,11 @@ namespace dxvk {
   void RtxContext::flushCommandList() {
     ScopedCpuProfileZone();
 
+    if (m_isD3D11Remix && !m_submitContainsInjectRtx) {
+      DxvkContext::flushCommandList();
+      return;
+    }
+
     // flush the residue
     tryHandleSky(nullptr, nullptr);
 
@@ -2119,6 +2124,12 @@ namespace dxvk {
 
   void RtxContext::updateComputeShaderResources() {
     ScopedCpuProfileZone();
+
+    if (m_isD3D11Remix && !m_submitContainsInjectRtx) {
+      DxvkContext::updateComputeShaderResources();
+      return;
+    }
+
     DxvkContext::updateComputeShaderResources();
 
     auto&& layout = m_state.cp.pipeline->layout();
@@ -2139,6 +2150,12 @@ namespace dxvk {
 
   void RtxContext::updateRaytracingShaderResources() {
     ScopedCpuProfileZone();
+
+    if (m_isD3D11Remix && !m_submitContainsInjectRtx) {
+      DxvkContext::updateRaytracingShaderResources();
+      return;
+    }
+
     DxvkContext::updateRaytracingShaderResources();
 
     auto&& layout = m_state.rp.pipeline->layout();
@@ -2617,6 +2634,11 @@ namespace dxvk {
 
   void RtxContext::clearRenderTarget(const Rc<DxvkImageView>& imageView,
                                      VkImageAspectFlags clearAspects, VkClearValue clearValue) {
+    if (m_isD3D11Remix) {
+      DxvkContext::clearRenderTarget(imageView, clearAspects, clearValue);
+      return;
+    }
+
     // Capture color for skybox clear
     if (clearAspects & VK_IMAGE_ASPECT_COLOR_BIT) {
       m_skyClearValue = clearValue;
@@ -2632,6 +2654,11 @@ namespace dxvk {
 
   void RtxContext::clearImageView(const Rc<DxvkImageView>& imageView, VkOffset3D offset,
                                   VkExtent3D extent, VkImageAspectFlags aspect, VkClearValue value) {
+    if (m_isD3D11Remix) {
+      DxvkContext::clearImageView(imageView, offset, extent, aspect, value);
+      return;
+    }
+
     // Capture color for skybox clear
     if (aspect & VK_IMAGE_ASPECT_COLOR_BIT) {
       m_skyClearValue = value;

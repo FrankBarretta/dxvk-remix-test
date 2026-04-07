@@ -444,14 +444,26 @@ namespace dxvk {
     auto immediateContext = static_cast<D3D11ImmediateContext*>(deviceContext.ptr());
     D3D10DeviceLock contextLock = immediateContext->LockContext();
 
-    m_parent->RTX().ResetScreenResolution(immediateContext,
-      std::max(m_desc.Width, 1u),
-      std::max(m_desc.Height, 1u));
+    const bool useGuardedRtxFrameHooks = m_parent->GetOptions()->enableRemix
+      && m_parent->UsesImmediateContextRtx()
+      && m_parent->RTX().CanUseRtxExecutionContext()
+      && m_parent->RTX().HasSeenRequiredTransforms();
+
+    if (useGuardedRtxFrameHooks) {
+      m_parent->RTX().ResetScreenResolution(immediateContext,
+        std::max(m_desc.Width, 1u),
+        std::max(m_desc.Height, 1u));
+    }
+
+    const bool useRemixPresentPath = useGuardedRtxFrameHooks
+      && m_parent->RTX().HasProjectionMatrixThisFrame();
 
     if (tracePresent)
       D3D11EarlyTrace("D3D11SwapChain::PresentImage after ResetScreenResolution");
 
-    m_parent->RTX().EndFrame(immediateContext, m_swapImage);
+    if (useGuardedRtxFrameHooks) {
+      m_parent->RTX().EndFrame(immediateContext, m_swapImage);
+    }
 
     if (tracePresent)
       D3D11EarlyTrace("D3D11SwapChain::PresentImage after EndFrame");
@@ -525,10 +537,10 @@ namespace dxvk {
       if (tracePresent)
         D3D11EarlyTrace("D3D11SwapChain::PresentImage ImGUI render complete");
 
-      if (m_parent->GetOptions()->enableRemix) {
+      if (useRemixPresentPath) {
         D3D11EarlyTrace("D3D11SwapChain::PresentImage remix skipping RTX OnPresent");
         m_parent->RTX().AdvanceFrameIdForPresentBypass();
-      } else {
+      } else if (useGuardedRtxFrameHooks) {
         m_parent->RTX().OnPresent(immediateContext, m_imageViews.at(imageIndex)->image());
 
         if (tracePresent)
@@ -546,7 +558,7 @@ namespace dxvk {
       if (i + 1 >= SyncInterval)
         m_context->signal(m_frameLatencySignal, m_frameId);
 
-      SubmitPresent(immediateContext, sync, i, imageIndex);
+      SubmitPresent(immediateContext, sync, i, imageIndex, useRemixPresentPath);
 
       if (tracePresent)
         D3D11EarlyTrace("D3D11SwapChain::PresentImage SubmitPresent complete");
@@ -564,11 +576,10 @@ namespace dxvk {
   void D3D11SwapChain::SubmitPresent(
           D3D11ImmediateContext*  pContext,
     const vk::PresenterSync&      Sync,
-        uint32_t                FrameId,
-        uint32_t                ImageIndex) {
+      uint32_t                FrameId,
+      uint32_t                ImageIndex,
+      bool                    useRemixPresentPath) {
     D3D11EarlyTrace("D3D11SwapChain::SubmitPresent enter");
-
-    const bool isD3D11Remix = m_parent->GetOptions()->enableRemix;
 
     auto lock = pContext->LockContext();
 
@@ -576,7 +587,7 @@ namespace dxvk {
     // have to synchronize with it first.
     m_presentStatus.result = VK_NOT_READY;
 
-    if (isD3D11Remix) {
+    if (useRemixPresentPath) {
       D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix sync path begin");
 
       Rc<DxvkCommandList> commandList = m_context->endRecording();
@@ -592,7 +603,7 @@ namespace dxvk {
     }
 
     pContext->EmitCs([this,
-      cIsD3D11Remix = isD3D11Remix,
+      cUseRemixPresentPath = useRemixPresentPath,
       cFrameId     = FrameId,
       cImageIndex  = ImageIndex,
       cSync        = Sync,
@@ -605,7 +616,7 @@ namespace dxvk {
         cSync.acquire, cSync.present);
       D3D11EarlyTrace("D3D11SwapChain::SubmitPresent after submitCommandList");
 
-      if (!cIsD3D11Remix
+      if (!cUseRemixPresentPath
        && m_hud != nullptr
        && !cFrameId) {
         D3D11EarlyTrace("D3D11SwapChain::SubmitPresent before HUD update");

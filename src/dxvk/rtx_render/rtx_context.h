@@ -160,6 +160,8 @@ namespace dxvk {
     virtual void updateRaytracingShaderResources() override;
 
   private:
+    bool m_isD3D11Remix = false;
+
     // This enum is for internal use only.
     // There is a mode called UpscalerType in RtxOptions, but it doesn't contain DLSS-RR because RR is considered as a special mode of DLSS.
     enum class InternalUpscaler {

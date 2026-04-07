@@ -5,6 +5,7 @@
 #include <atomic>
 #include <mutex>
 
+#include "../dxvk/dxvk_cs.h"
 #include "../dxvk/dxvk_image.h"
 #include "../dxvk/rtx_render/rtx_context.h"
 #include "../util/util_threadpool.h"
@@ -34,9 +35,25 @@ namespace dxvk {
     };
 
     explicit D3D11Rtx(D3D11Device* device);
+    ~D3D11Rtx();
 
     bool IsEnabled() const {
       return m_enabled;
+    }
+
+    bool HasRtxExecutionContext() const;
+
+    bool CanUseRtxExecutionContext() const {
+      return HasRtxExecutionContext() && !m_auxiliaryBackendFaulted.load(std::memory_order_relaxed);
+    }
+
+    bool HasProjectionMatrixThisFrame() const {
+      return m_hasProjectionMatrixThisFrame.load(std::memory_order_relaxed);
+    }
+
+    bool HasSeenRequiredTransforms() const {
+      return m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
+          && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed);
     }
 
     void NotifyDraw(const DrawContext& drawContext);
@@ -61,13 +78,52 @@ namespace dxvk {
 
     void AdvanceFrameIdForPresentBypass();
 
+    template<typename T>
+    void EmitRtxCs(T command) {
+      if (m_rtxCsThread == nullptr)
+        return;
+
+      DxvkCsChunkRef chunk(m_rtxCsChunkPool.allocChunk(DxvkCsChunkFlag::SingleUse), &m_rtxCsChunkPool);
+
+      if (!chunk->push(command)) {
+        return;
+      }
+
+      m_rtxCsThread->dispatchChunk(std::move(chunk));
+    }
+
+    void SynchronizeRtxCs() {
+      if (m_rtxCsThread != nullptr)
+        m_rtxCsThread->synchronize(DxvkCsThread::SynchronizeAll);
+    }
+
   private:
+    bool EnsureRtxExecutionContextLocked();
+
     std::mutex m_mutex;
     D3D11Device* const m_parent;
     const std::unique_ptr<GeometryProcessor> m_geometryWorkers;
+    DxvkCsChunkPool m_rtxCsChunkPool;
+    Rc<RtxContext> m_rtxContext;
+    std::unique_ptr<DxvkCsThread> m_rtxCsThread;
     bool m_enabled;
     bool m_loggedExperimentalWarning = false;
-    std::atomic<bool> m_geometryCaptureDisabled = false;
+    bool m_loggedTelemetryOnlyWarning = false;
+    bool m_loggedTelemetryCompleteWarning = false;
+    bool m_loggedDeferredAuxiliaryContextWarning = false;
+    bool m_loggedInferredProjectionWarning = false;
+    bool m_loggedInferredObjectToViewWarning = false;
+    bool m_loggedMissingProjectionWarning = false;
+    bool m_loggedSkippedInjectWarning = false;
+    bool m_loggedAuxiliaryGeometryIsolationWarning = false;
+    bool m_loggedAuxiliaryDormantWarning = false;
+    bool m_loggedAuxiliaryBackendFaultWarning = false;
+    std::atomic<bool> m_geometryCaptureFaultedThisFrame = false;
+    std::atomic<bool> m_auxiliaryBackendFaulted = false;
+    std::atomic<bool> m_hasProjectionMatrixThisFrame = false;
+    std::atomic<bool> m_hasSeenProjectionMatrix = false;
+    std::atomic<bool> m_hasSeenObjectToViewMatrix = false;
+    std::atomic<uint32_t> m_geometryCaptureFaultCount = 0;
     uint64_t m_reflexFrameId = 0;
     uint64_t m_pendingDrawCalls = 0;
     uint32_t m_screenWidth = 0;

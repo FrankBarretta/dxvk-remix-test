@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstring>
 
 #include <glm/gtc/packing.hpp>
@@ -17,24 +18,35 @@
 
 #include "../dxvk/rtx_render/rtx_hashing.h"
 #include "../dxvk/rtx_render/rtx_context.h"
+#include "../dxvk/rtx_render/rtx_matrix_helpers.h"
 
 namespace dxvk {
 
   namespace {
+    constexpr uint32_t kGeometryFaultLogInterval = 256u;
 
     struct D3D11RtxResolvedAttribute {
       DxvkVertexAttribute attribute;
       const D3D11VertexBufferBinding* binding = nullptr;
     };
 
+    struct D3D11RtxInferredTransforms {
+      Matrix4 objectToView;
+      Matrix4 viewToProjection;
+      bool hasObjectToView = false;
+      bool hasViewToProjection = false;
+    };
+
     bool isSupportedTopology(D3D11_PRIMITIVE_TOPOLOGY topology, VkPrimitiveTopology& vkTopology) {
       switch (topology) {
         case D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
           vkTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
           return true;
 
         case D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
           vkTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+
           return true;
 
         default:
@@ -141,6 +153,117 @@ namespace dxvk {
 
     bool hasBoundBuffer(const D3D11VertexBufferBinding& binding) {
       return binding.buffer != nullptr && binding.stride != 0u;
+    }
+
+    bool isFiniteMatrix(const Matrix4& matrix) {
+      for (uint32_t row = 0; row < 4; row++) {
+        for (uint32_t col = 0; col < 4; col++) {
+          if (!std::isfinite(matrix[row][col]))
+            return false;
+        }
+      }
+
+      return true;
+    }
+
+    bool isCandidateAffineTransform(const Matrix4& matrix) {
+      if (!isFiniteMatrix(matrix) || isIdentityExact(matrix))
+        return false;
+
+      const float epsilon = 1e-3f;
+
+      if (std::abs(matrix[0][3]) > epsilon
+       || std::abs(matrix[1][3]) > epsilon
+       || std::abs(matrix[2][3]) > epsilon
+       || std::abs(matrix[3][3] - 1.0f) > epsilon) {
+        return false;
+      }
+
+      const float axisLengthX = length(Vector3(matrix[0][0], matrix[0][1], matrix[0][2]));
+      const float axisLengthY = length(Vector3(matrix[1][0], matrix[1][1], matrix[1][2]));
+      const float axisLengthZ = length(Vector3(matrix[2][0], matrix[2][1], matrix[2][2]));
+
+      const bool validAxisLengths = axisLengthX > epsilon && axisLengthX < 1e4f
+                                 && axisLengthY > epsilon && axisLengthY < 1e4f
+                                 && axisLengthZ > epsilon && axisLengthZ < 1e4f;
+
+      if (!validAxisLengths)
+        return false;
+
+      const Vector3 translation(matrix[3][0], matrix[3][1], matrix[3][2]);
+      return length(translation) < 1e7f;
+    }
+
+    bool isCandidateProjectionMatrix(const Matrix4& matrix) {
+      if (!isFiniteMatrix(matrix) || isIdentityExact(matrix))
+        return false;
+
+      DecomposeProjectionParams params;
+      decomposeProjection(matrix, params);
+
+      return std::isfinite(params.fov)
+          && std::isfinite(params.aspectRatio)
+          && std::isfinite(params.nearPlane)
+          && std::isfinite(params.farPlane)
+          && std::isfinite(params.shearX)
+          && std::isfinite(params.shearY)
+          && params.fov > 0.2f
+          && params.fov < 3.1f
+          && std::abs(params.aspectRatio) > 0.3f
+          && std::abs(params.aspectRatio) < 5.0f
+          && params.nearPlane > 0.0f
+          && params.farPlane > params.nearPlane
+          && std::abs(params.shearX) < 0.01f
+          && std::abs(params.shearY) < 0.01f;
+    }
+
+    Matrix4 loadMatrix4(const uint8_t* data) {
+      Matrix4 matrix;
+      std::memcpy(&matrix, data, sizeof(matrix));
+      return matrix;
+    }
+
+    bool considerMatrixCandidate(const Matrix4& candidate, D3D11RtxInferredTransforms& inferred) {
+      if (!inferred.hasViewToProjection && isCandidateProjectionMatrix(candidate)) {
+        inferred.viewToProjection = candidate;
+        inferred.hasViewToProjection = true;
+      }
+
+      if (!inferred.hasObjectToView && isCandidateAffineTransform(candidate)) {
+        inferred.objectToView = candidate;
+        inferred.hasObjectToView = true;
+      }
+
+      return inferred.hasObjectToView && inferred.hasViewToProjection;
+    }
+
+    D3D11RtxInferredTransforms inferTransformsFromVsConstants(const D3D11ContextStateVS& vsState) {
+      D3D11RtxInferredTransforms inferred;
+
+      for (const auto& binding : vsState.constantBuffers) {
+        if (binding.buffer == nullptr || binding.constantBound < 4u)
+          continue;
+
+        const VkDeviceSize byteOffset = static_cast<VkDeviceSize>(binding.constantOffset) * 16u;
+        const VkDeviceSize byteLength = static_cast<VkDeviceSize>(binding.constantBound) * 16u;
+        const auto slice = binding.buffer->GetBufferSlice(byteOffset, byteLength);
+        const auto* data = reinterpret_cast<const uint8_t*>(slice.mapPtr(0));
+
+        if (data == nullptr)
+          continue;
+
+        for (VkDeviceSize candidateOffset = 0u; candidateOffset + sizeof(Matrix4) <= byteLength; candidateOffset += 16u) {
+          const Matrix4 candidate = loadMatrix4(data + candidateOffset);
+          if (considerMatrixCandidate(candidate, inferred))
+            return inferred;
+
+          const Matrix4 candidateTranspose = transpose(candidate);
+          if (considerMatrixCandidate(candidateTranspose, inferred))
+            return inferred;
+        }
+      }
+
+      return inferred;
     }
 
     bool resolveIndirectDrawContext(D3D11Rtx::DrawContext& drawContext) {
@@ -268,7 +391,51 @@ namespace dxvk {
   : m_parent(device),
     m_geometryWorkers(device->GetOptions()->enableRemix ? std::make_unique<GeometryProcessor>(1, "d3d11-geometry") : nullptr),
     m_enabled(device->GetOptions()->enableRemix) {
+  }
 
+  D3D11Rtx::~D3D11Rtx() {
+    SynchronizeRtxCs();
+
+  }
+
+  bool D3D11Rtx::HasRtxExecutionContext() const {
+    return m_parent->UsesImmediateContextRtx() || m_rtxCsThread != nullptr;
+  }
+
+  bool D3D11Rtx::EnsureRtxExecutionContextLocked() {
+    if (m_parent->UsesImmediateContextRtx())
+      return true;
+
+    if (!m_enabled || !m_parent->GetOptions()->useRtxContext)
+      return false;
+
+    if (m_rtxCsThread != nullptr)
+      return true;
+
+    m_rtxContext = m_parent->GetDXVKDevice()->createRtxContext();
+    m_rtxCsThread = std::make_unique<DxvkCsThread>(m_parent->GetDXVKDevice(), m_rtxContext);
+
+    EmitRtxCs([
+      cDevice = m_parent->GetDXVKDevice(),
+      cRelaxedBarriers = m_parent->GetOptions()->relaxedBarriers,
+      cIgnoreGraphicsBarriers = m_parent->GetOptions()->ignoreGraphicsBarriers
+    ] (DxvkContext* ctx) {
+      ctx->beginRecording(cDevice->createCommandList());
+
+      DxvkBarrierControlFlags barrierControl;
+
+      if (cRelaxedBarriers)
+        barrierControl.set(DxvkBarrierControl::IgnoreWriteAfterWrite);
+
+      if (cIgnoreGraphicsBarriers)
+        barrierControl.set(DxvkBarrierControl::IgnoreGraphicsBarriers);
+
+      ctx->setBarrierControl(barrierControl);
+    });
+
+    SynchronizeRtxCs();
+    Logger::warn("D3D11: Arming the auxiliary RTX command stream now that projection and object-to-view transforms have both been observed.");
+    return true;
   }
 
   namespace {
@@ -285,20 +452,53 @@ namespace dxvk {
       return true;
 #endif
     }
+
+    bool TryResetScreenResolution(RtxContext* rtxContext, uint32_t width, uint32_t height) {
+#ifdef _MSC_VER
+      __try {
+        rtxContext->resetScreenResolution({ width, height, 1u });
+        return true;
+      } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+      }
+#else
+      rtxContext->resetScreenResolution({ width, height, 1u });
+      return true;
+#endif
+    }
+
   }
 
 
   void D3D11Rtx::NotifyDraw(const DrawContext& drawContext) {
-    if (!m_enabled || !m_parent->UsesImmediateContextRtx() || m_geometryCaptureDisabled.load(std::memory_order_relaxed))
+    if (!m_enabled)
       return;
+
+    if (!CanUseRtxExecutionContext()
+     && m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
+     && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed)) {
+      return;
+    }
 
     std::lock_guard<std::mutex> lock(m_mutex);
 
     m_pendingDrawCalls += 1;
 
-    if (!m_loggedExperimentalWarning) {
+    if (CanUseRtxExecutionContext() && !m_loggedExperimentalWarning) {
       m_loggedExperimentalWarning = true;
-      Logger::warn("D3D11: Experimental Remix path enabled. Indexed immediate-context geometry capture is active for supported triangle draws.");
+      Logger::warn("D3D11: Experimental Remix path enabled. D3D11 draws feed an auxiliary RTX command stream for supported triangle captures.");
+    }
+
+    if (!CanUseRtxExecutionContext() && !m_loggedTelemetryOnlyWarning) {
+      m_loggedTelemetryOnlyWarning = true;
+      Logger::info("D3D11: Running stable DXVK context while collecting Remix transform telemetry from D3D11 draws.");
+    }
+
+    if (!CanUseRtxExecutionContext()
+     && m_parent->GetOptions()->useRtxContext
+     && !m_loggedDeferredAuxiliaryContextWarning) {
+      m_loggedDeferredAuxiliaryContextWarning = true;
+      Logger::warn("D3D11: Deferring auxiliary RTX command stream creation until the required transforms have been inferred at least once.");
     }
 
     (void)drawContext;
@@ -308,10 +508,77 @@ namespace dxvk {
   void D3D11Rtx::CommitGeometryToRT(
           D3D11DeviceContext*         context,
     const DrawContext&                drawContext) {
-    if (!m_enabled || !m_parent->UsesImmediateContextRtx() || m_geometryCaptureDisabled.load(std::memory_order_relaxed))
+    if (!m_enabled || m_geometryCaptureFaultedThisFrame.load(std::memory_order_relaxed))
       return;
 
+    if (!CanUseRtxExecutionContext()
+     && m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
+     && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed)) {
+      return;
+    }
+
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    const auto inferredTransforms = inferTransformsFromVsConstants(context->m_state.vs);
+
+    if (inferredTransforms.hasViewToProjection && !m_loggedInferredProjectionWarning) {
+      m_loggedInferredProjectionWarning = true;
+      Logger::info("D3D11: Inferred a projection matrix from VS constant buffers for Remix camera detection.");
+    }
+
+    if (inferredTransforms.hasViewToProjection) {
+      m_hasProjectionMatrixThisFrame.store(true, std::memory_order_relaxed);
+      m_hasSeenProjectionMatrix.store(true, std::memory_order_relaxed);
+    }
+
+    if (inferredTransforms.hasObjectToView && !m_loggedInferredObjectToViewWarning) {
+      m_loggedInferredObjectToViewWarning = true;
+      Logger::info("D3D11: Inferred an object-to-view matrix from VS constant buffers for Remix geometry placement.");
+    }
+
+    if (inferredTransforms.hasObjectToView) {
+      m_hasSeenObjectToViewMatrix.store(true, std::memory_order_relaxed);
+    }
+
+    if (!CanUseRtxExecutionContext()
+     && m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
+     && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed)
+     && !m_loggedTelemetryCompleteWarning) {
+      m_loggedTelemetryCompleteWarning = true;
+      Logger::info("D3D11: Remix transform telemetry is complete; stopping further constant-buffer scans on the stable path.");
+    }
+
+    if (!m_parent->UsesImmediateContextRtx()) {
+      if (!m_loggedAuxiliaryGeometryIsolationWarning) {
+        m_loggedAuxiliaryGeometryIsolationWarning = true;
+        Logger::warn("D3D11: Auxiliary RTX geometry submission is still disabled during DX11 isolation, so the RTX backend will remain dormant to avoid collapsing performance.");
+      }
+
+      if (!m_loggedAuxiliaryDormantWarning
+       && m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
+       && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed)) {
+        m_loggedAuxiliaryDormantWarning = true;
+        Logger::warn("D3D11: DX11 Remix has the required transforms, but auxiliary backend arming is deferred until geometry submission is re-enabled.");
+      }
+
+      return;
+    }
+
+    if (!CanUseRtxExecutionContext()
+     && m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
+     && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed)) {
+      if (!EnsureRtxExecutionContextLocked())
+        return;
+
+      if (!m_loggedExperimentalWarning) {
+        m_loggedExperimentalWarning = true;
+        Logger::warn("D3D11: Experimental Remix path enabled. D3D11 draws feed an auxiliary RTX command stream for supported triangle captures.");
+      }
+    }
+
+    if (!CanUseRtxExecutionContext()) {
+      return;
+    }
 
     DrawContext resolvedDrawContext = drawContext;
     if (!resolveIndirectDrawContext(resolvedDrawContext))
@@ -512,9 +779,24 @@ namespace dxvk {
       drawCallState.stencilEnabled = depthStencilDesc.StencilEnable;
     }
     drawCallState.transformData.objectToWorld = Matrix4();
-    drawCallState.transformData.worldToView = Matrix4();
-    drawCallState.transformData.objectToView = Matrix4();
-    drawCallState.transformData.viewToProjection = Matrix4();
+    drawCallState.transformData.worldToView = inferredTransforms.hasObjectToView
+      ? inferredTransforms.objectToView
+      : Matrix4();
+    drawCallState.transformData.objectToView = inferredTransforms.hasObjectToView
+      ? inferredTransforms.objectToView
+      : Matrix4();
+    drawCallState.transformData.viewToProjection = inferredTransforms.hasViewToProjection
+      ? inferredTransforms.viewToProjection
+      : Matrix4();
+
+    if (!inferredTransforms.hasViewToProjection) {
+      if (!m_loggedMissingProjectionWarning) {
+        m_loggedMissingProjectionWarning = true;
+        Logger::warn("D3D11: Skipping Remix geometry capture until a projection matrix can be inferred from VS constant buffers.");
+      }
+
+      return;
+    }
 
     for (const auto& shaderResourceView : context->m_state.ps.shaderResources.views) {
       if (shaderResourceView == nullptr)
@@ -539,17 +821,39 @@ namespace dxvk {
       ? static_cast<uint32_t>(resolvedDrawContext.vertexOffset)
       : resolvedDrawContext.firstVertex;
 
-    context->EmitCs([this, params, drawCallState = std::move(drawCallState)](DxvkContext* ctx) mutable {
-      RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::CommitGeometryToRT skipped because CS thread is not using an RTX context");
+    auto emitCommit = [this, params, drawCallState = std::move(drawCallState)](DxvkContext* ctx) mutable {
+      RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::CommitGeometryToRT skipped because the command stream is not using an RTX context");
       if (rtxContext == nullptr)
         return;
 
-      if (!TryCommitGeometryToRt(rtxContext, params, drawCallState)) {
-        if (!m_geometryCaptureDisabled.exchange(true, std::memory_order_relaxed)) {
-          Logger::warn("D3D11: Disabled Remix geometry capture after backend fault in commitGeometryToRT.");
-        }
+      if (TryCommitGeometryToRt(rtxContext, params, drawCallState)) {
+        m_geometryCaptureFaultCount.store(0u, std::memory_order_relaxed);
+        return;
       }
-    });
+
+      m_auxiliaryBackendFaulted.store(true, std::memory_order_relaxed);
+      const uint32_t faultCount = m_geometryCaptureFaultCount.fetch_add(1u, std::memory_order_relaxed) + 1u;
+      m_geometryCaptureFaultedThisFrame.store(true, std::memory_order_relaxed);
+
+      if (!m_loggedAuxiliaryBackendFaultWarning) {
+        m_loggedAuxiliaryBackendFaultWarning = true;
+        Logger::warn("D3D11: Disabling the auxiliary RTX command stream after a backend fault. Falling back to telemetry-only DX11 Remix behavior.");
+      }
+
+      if (faultCount <= 4u) {
+        Logger::warn(str::format("D3D11: Suppressing further Remix geometry capture until the next frame after backend fault ", faultCount, "."));
+      }
+
+      if (faultCount % kGeometryFaultLogInterval == 0u) {
+        Logger::warn(str::format("D3D11: commitGeometryToRT has seen ", faultCount, " backend faults so far; per-frame suppression remains active."));
+      }
+    };
+
+    if (m_parent->UsesImmediateContextRtx()) {
+      context->EmitCs(std::move(emitCommit));
+    } else {
+      EmitRtxCs(std::move(emitCommit));
+    }
   }
 
 
@@ -557,7 +861,10 @@ namespace dxvk {
           D3D11ImmediateContext*      context,
           uint32_t                    width,
           uint32_t                    height) {
-    if (!m_enabled || !m_parent->UsesImmediateContextRtx())
+    if (!m_parent->UsesImmediateContextRtx())
+      return;
+
+    if (!m_enabled || !CanUseRtxExecutionContext())
       return;
 
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -569,13 +876,18 @@ namespace dxvk {
     m_screenWidth = width;
     m_screenHeight = height;
 
-    context->EmitCs([cWidth = width, cHeight = height](DxvkContext* ctx) {
-      RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::ResetScreenResolution skipped because CS thread is not using an RTX context");
+    auto emitReset = [cWidth = width, cHeight = height](DxvkContext* ctx) {
+      RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::ResetScreenResolution skipped because the command stream is not using an RTX context");
       if (rtxContext == nullptr)
         return;
 
-      rtxContext->resetScreenResolution({ cWidth, cHeight, 1u });
-    });
+      TryResetScreenResolution(rtxContext, cWidth, cHeight);
+    };
+
+    if (m_parent->UsesImmediateContextRtx())
+      context->EmitCs(std::move(emitReset));
+    else
+      EmitRtxCs(std::move(emitReset));
   }
 
 
@@ -583,7 +895,10 @@ namespace dxvk {
           D3D11ImmediateContext*      context,
     const Rc<DxvkImage>&              targetImage,
           bool                        callInjectRtx) {
-    if (!m_enabled || !m_parent->UsesImmediateContextRtx())
+    if (!m_parent->UsesImmediateContextRtx())
+      return;
+
+    if (!m_enabled || !CanUseRtxExecutionContext())
       return;
 
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -594,34 +909,46 @@ namespace dxvk {
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::EndFrame enter");
 
-    if (!m_parent->GetOptions()->enableRemix) {
+    if (!m_parent->UsesImmediateContextRtx()) {
       context->Flush();
+      SynchronizeRtxCs();
     }
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::EndFrame after Flush");
 
+    const bool shouldInjectRtx = callInjectRtx && m_hasProjectionMatrixThisFrame.load(std::memory_order_relaxed);
+
+    if (callInjectRtx && !shouldInjectRtx && !m_loggedSkippedInjectWarning) {
+      m_loggedSkippedInjectWarning = true;
+      Logger::warn("D3D11: Skipping RTX end-of-frame injection until a projection matrix is inferred for the current frame.");
+    }
+
     const auto currentReflexFrameId = m_reflexFrameId;
-    context->EmitCs([currentReflexFrameId, targetImage, callInjectRtx, traceFrame](DxvkContext* ctx) {
+    auto emitEndFrame = [currentReflexFrameId, targetImage, shouldInjectRtx, traceFrame](DxvkContext* ctx) {
       if (traceFrame)
         D3D11EarlyTrace("D3D11Rtx::EndFrame CS begin");
 
-      RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::EndFrame skipped because CS thread is not using an RTX context");
+      RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::EndFrame skipped because the command stream is not using an RTX context");
       if (rtxContext == nullptr)
         return;
 
       if (traceFrame)
         D3D11EarlyTrace("D3D11Rtx::EndFrame CS before rtxContext->endFrame");
 
-      rtxContext->endFrame(currentReflexFrameId, targetImage, callInjectRtx);
+      rtxContext->endFrame(currentReflexFrameId, targetImage, shouldInjectRtx);
 
       if (traceFrame)
         D3D11EarlyTrace("D3D11Rtx::EndFrame CS after rtxContext->endFrame");
-    });
+    };
+
+    context->EmitCs(std::move(emitEndFrame));
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::EndFrame EmitCs queued");
 
+    m_geometryCaptureFaultedThisFrame.store(false, std::memory_order_relaxed);
+    m_hasProjectionMatrixThisFrame.store(false, std::memory_order_relaxed);
     m_pendingDrawCalls = 0;
   }
 
@@ -629,7 +956,10 @@ namespace dxvk {
   void D3D11Rtx::OnPresent(
           D3D11ImmediateContext*      context,
     const Rc<DxvkImage>&              targetImage) {
-    if (!m_enabled || !m_parent->UsesImmediateContextRtx())
+    if (!m_parent->UsesImmediateContextRtx())
+      return;
+
+    if (!m_enabled || !CanUseRtxExecutionContext())
       return;
 
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -640,11 +970,11 @@ namespace dxvk {
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::OnPresent enter");
 
-    context->EmitCs([targetImage, traceFrame](DxvkContext* ctx) {
+    auto emitOnPresent = [targetImage, traceFrame](DxvkContext* ctx) {
       if (traceFrame)
         D3D11EarlyTrace("D3D11Rtx::OnPresent CS begin");
 
-      RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::OnPresent skipped because CS thread is not using an RTX context");
+      RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::OnPresent skipped because the command stream is not using an RTX context");
       if (rtxContext == nullptr)
         return;
 
@@ -655,7 +985,9 @@ namespace dxvk {
 
       if (traceFrame)
         D3D11EarlyTrace("D3D11Rtx::OnPresent CS after rtxContext->onPresent");
-    });
+    };
+
+    context->EmitCs(std::move(emitOnPresent));
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::OnPresent EmitCs queued");
@@ -665,7 +997,7 @@ namespace dxvk {
 
 
   void D3D11Rtx::AdvanceFrameIdForPresentBypass() {
-    if (!m_enabled || !m_parent->UsesImmediateContextRtx())
+    if (!m_enabled || !CanUseRtxExecutionContext())
       return;
 
     std::lock_guard<std::mutex> lock(m_mutex);
