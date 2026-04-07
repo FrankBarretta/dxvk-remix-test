@@ -399,7 +399,15 @@ namespace dxvk {
 
     const uint32_t frameIdx = ctx->getDevice()->getCurrentFrameId();
 
+    auto logIntegrateIndirectProbeStep = [ctx](const char* step) {
+      if (ctx->isD3D11InjectProbeActive()) {
+        Logger::warn(str::format("D3D11: DxvkPathtracerIntegrateIndirect::dispatch ", step, "."));
+      }
+    };
+
+    logIntegrateIndirectProbeStep("before log-mode");
     logIntegrateIndirectMode();
+    logIntegrateIndirectProbeStep("after log-mode");
 
     // Bind resources
 
@@ -408,7 +416,9 @@ namespace dxvk {
     Rc<DxvkSampler> linearWrapSampler = ctx->getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_REPEAT);
     Rc<DxvkBuffer> primitiveIDPrefixSumBuffer = ctx->getSceneManager().getCurrentFramePrimitiveIDPrefixSumBuffer();
 
+    logIntegrateIndirectProbeStep("before bind-common-resources");
     ctx->bindCommonRayTracingResources(rtOutput);
+    logIntegrateIndirectProbeStep("after bind-common-resources");
 
     ctx->bindResourceSampler(INTEGRATE_INDIRECT_BINDING_LINEAR_WRAP_SAMPLER, linearWrapSampler);
 
@@ -483,37 +493,84 @@ namespace dxvk {
     DebugView& debugView = ctx->getDevice()->getCommon()->metaDebugView();
     ctx->bindResourceView(INTEGRATE_INSTRUMENTATION, debugView.getInstrumentation(), nullptr);
 
-    const bool nrcEnabled = nrc.isActive();
+    logIntegrateIndirectProbeStep("after bind-integrate-indirect-resources");
 
+    logIntegrateIndirectProbeStep("before nrc-bind-resources");
+    const bool nrcEnabled = nrc.isActive();
+    logIntegrateIndirectProbeStep("after nrc-bind-resources");
+
+    logIntegrateIndirectProbeStep("before ray-dims");
     const VkExtent3D& rayDims = nrcEnabled
       ? nrc.calcRaytracingResolution()
       : rtOutput.m_compositeOutputExtent;
+    logIntegrateIndirectProbeStep("after ray-dims");
 
+    logIntegrateIndirectProbeStep("before ser-enabled");
     const bool serEnabled = RtxOptions::isShaderExecutionReorderingInPathtracerIntegrateIndirectEnabled();
-    const bool ommEnabled = RtxOptions::getEnableOpacityMicromap();
+    logIntegrateIndirectProbeStep("after ser-enabled");
+    logIntegrateIndirectProbeStep("before omm-enabled");
+    const bool ommEnabled = ctx->isD3D11RemixEnabled()
+      ? false
+      : RtxOptions::getEnableOpacityMicromap();
+    if (ctx->isD3D11InjectProbeActive() && ctx->isD3D11RemixEnabled()) {
+      Logger::warn("D3D11: DxvkPathtracerIntegrateIndirect::dispatch forcing omm-enabled=false on the experimental D3D11 Remix path.");
+    }
+    logIntegrateIndirectProbeStep("after omm-enabled");
+    logIntegrateIndirectProbeStep("before include-portals");
     const bool includePortals = RtxOptions::rayPortalModelTextureHashes().size() > 0 || rtOutput.m_raytraceArgs.numActiveRayPortals > 0;
+    logIntegrateIndirectProbeStep("after include-portals");
+    logIntegrateIndirectProbeStep("before pom-enabled");
     const bool pomEnabled = rtOutput.m_raytraceArgs.pomMode != DisplacementMode::Off && RtxOptions::Displacement::enableIndirectHit();
+    logIntegrateIndirectProbeStep("after pom-enabled");
+    logIntegrateIndirectProbeStep("before nee-cache-enabled");
     const bool neeCacheEnabled = NeeCachePass::enable();
+    logIntegrateIndirectProbeStep("after nee-cache-enabled");
+    logIntegrateIndirectProbeStep("before wboit-enabled");
     const bool wboitEnabled = RtxOptions::wboitEnabled();
+    logIntegrateIndirectProbeStep("after wboit-enabled");
+
+    RaytraceMode effectiveRaytraceMode = RtxOptions::renderPassIntegrateIndirectRaytraceMode();
+    if (ctx->isD3D11RemixEnabled() && effectiveRaytraceMode == RaytraceMode::TraceRay) {
+      if (ctx->isD3D11InjectProbeActive()) {
+        Logger::warn("D3D11: DxvkPathtracerIntegrateIndirect::dispatch forcing RayQuery mode on the experimental D3D11 Remix path.");
+      }
+      effectiveRaytraceMode = RaytraceMode::RayQuery;
+    }
 
     // Trace indirect ray
     {
       ScopedGpuProfileZone(ctx, "Integrate Indirect Raytracing");
       const NeeCachePass& neeCache = ctx->getCommonObjects()->metaNeeCache();
-      switch (RtxOptions::renderPassIntegrateIndirectRaytraceMode()) {
+      logIntegrateIndirectProbeStep("before mode-switch");
+      switch (effectiveRaytraceMode) {
       case RaytraceMode::RayQuery: {
+        logIntegrateIndirectProbeStep("mode-rayquery");
         VkExtent3D workgroups = util::computeBlockCount(rayDims, VkExtent3D { 16, 8, 1 });
+        logIntegrateIndirectProbeStep("before bind-compute-shader");
         ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getComputeShader(neeCacheEnabled, nrcEnabled, wboitEnabled));
+        logIntegrateIndirectProbeStep("after bind-compute-shader");
+        logIntegrateIndirectProbeStep("before compute-dispatch");
         ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
+        logIntegrateIndirectProbeStep("after compute-dispatch");
         break;
       }
       case RaytraceMode::RayQueryRayGen:
+        logIntegrateIndirectProbeStep("mode-rayquery-raygen");
+        logIntegrateIndirectProbeStep("before bind-raytracing-pipeline");
         ctx->bindRaytracingPipelineShaders(getPipelineShaders(true, serEnabled, ommEnabled, neeCacheEnabled, includePortals, pomEnabled, nrcEnabled, wboitEnabled));
+        logIntegrateIndirectProbeStep("after bind-raytracing-pipeline");
+        logIntegrateIndirectProbeStep("before trace-rays");
         ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+        logIntegrateIndirectProbeStep("after trace-rays");
         break;
       case RaytraceMode::TraceRay:
+        logIntegrateIndirectProbeStep("mode-traceray");
+        logIntegrateIndirectProbeStep("before bind-raytracing-pipeline");
         ctx->bindRaytracingPipelineShaders(getPipelineShaders(false, serEnabled, ommEnabled, neeCacheEnabled, includePortals, pomEnabled, nrcEnabled, wboitEnabled));
+        logIntegrateIndirectProbeStep("after bind-raytracing-pipeline");
+        logIntegrateIndirectProbeStep("before trace-rays");
         ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+        logIntegrateIndirectProbeStep("after trace-rays");
         break;
       case RaytraceMode::Count:
         assert(false && "Invalid RaytraceMode in DxvkPathtracerIntegrateIndirect::dispatch");

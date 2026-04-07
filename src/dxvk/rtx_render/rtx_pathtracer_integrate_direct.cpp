@@ -135,9 +135,17 @@ namespace dxvk {
     ScopedGpuProfileZone(ctx, "Integrate Direct Raytracing");
     ctx->setFramePassStage(RtxFramePassStage::DirectIntegration);
 
+    auto logIntegrateDirectProbeStep = [ctx](const char* step) {
+      if (ctx->isD3D11InjectProbeActive()) {
+        Logger::warn(str::format("D3D11: DxvkPathtracerIntegrateDirect::dispatch ", step, "."));
+      }
+    };
+
     // Bind resources
 
+    logIntegrateDirectProbeStep("before bind-common-resources");
     ctx->bindCommonRayTracingResources(rtOutput);
+    logIntegrateDirectProbeStep("after bind-common-resources");
 
     Rc<DxvkSampler> linearSampler = ctx->getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
@@ -197,20 +205,38 @@ namespace dxvk {
     ctx->bindResourceView(INTEGRATE_DIRECT_BINDING_SECONDARY_POSITION_ERROR_INPUT, rtOutput.m_secondaryPositionError.view(Resources::AccessType::Read), nullptr);
     ctx->bindResourceView(INTEGRATE_DIRECT_BINDING_INDIRECT_FIRST_SAMPLED_LOBE_DATA_OUTPUT, rtOutput.m_indirectFirstSampledLobeData.view(Resources::AccessType::Write), nullptr);
 
+    logIntegrateDirectProbeStep("after bind-integrate-direct-resources");
+
+    logIntegrateDirectProbeStep("before ray-dims");
     const VkExtent3D& rayDims = rtOutput.m_compositeOutputExtent;
+    logIntegrateDirectProbeStep("after ray-dims");
 
-    const bool ommEnabled = RtxOptions::getEnableOpacityMicromap();
+    logIntegrateDirectProbeStep("before omm-enabled");
+    const bool ommEnabled = ctx->isD3D11RemixEnabled()
+      ? false
+      : RtxOptions::getEnableOpacityMicromap();
+    if (ctx->isD3D11InjectProbeActive() && ctx->isD3D11RemixEnabled()) {
+      Logger::warn("D3D11: DxvkPathtracerIntegrateDirect::dispatch forcing omm-enabled=false on the experimental D3D11 Remix path.");
+    }
+    logIntegrateDirectProbeStep("after omm-enabled");
 
+    logIntegrateDirectProbeStep("before mode-switch");
     switch (RtxOptions::renderPassIntegrateDirectRaytraceMode()) {
     case RaytraceMode::RayQuery: {
+      logIntegrateDirectProbeStep("mode-rayquery");
       VkExtent3D workgroups = util::computeBlockCount(rayDims, VkExtent3D { 16, 8, 1 });
+      logIntegrateDirectProbeStep("before compute-dispatch");
       ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getComputeShader());
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
+      logIntegrateDirectProbeStep("after compute-dispatch");
       break;
     }
     case RaytraceMode::RayQueryRayGen:
+      logIntegrateDirectProbeStep("mode-rayquery-raygen");
+      logIntegrateDirectProbeStep("before trace-rays");
       ctx->bindRaytracingPipelineShaders(getPipelineShaders(true, ommEnabled));
       ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+      logIntegrateDirectProbeStep("after trace-rays");
       break;
     default:
       assert(!"Unsupported RaytraceMode");

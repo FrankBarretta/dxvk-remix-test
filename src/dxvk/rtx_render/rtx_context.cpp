@@ -714,16 +714,22 @@ namespace dxvk {
           goto inject_probe_fallback;
 
         // Neural Radiance Cache
+        logInjectProbeStep("before nrc");
         m_common->metaNeuralRadianceCache().dispatchTrainingAndResolve(*this, rtOutput);
         traceInjectStage("after nrc");
+        logInjectProbeStep("after nrc");
 
         // RTXDI confidence
+        logInjectProbeStep("before rtxdi-confidence");
         m_common->metaRtxdiRayQuery().dispatchConfidence(this, rtOutput);
         traceInjectStage("after rtxdi-confidence");
+        logInjectProbeStep("after rtxdi-confidence");
 
         // ReSTIR GI
+        logInjectProbeStep("before restir-gi");
         m_common->metaReSTIRGIRayQuery().dispatch(this, rtOutput);
         traceInjectStage("after restir-gi");
+        logInjectProbeStep("after restir-gi");
         
         if (captureScreenImage && captureDebugImage) {
           takeScreenshot("baseReflectivity", rtOutput.m_primaryBaseReflectivity.image(Resources::AccessType::Read));
@@ -732,8 +738,10 @@ namespace dxvk {
         }
 
         // Demodulation
+        logInjectProbeStep("before demodulate");
         dispatchDemodulate(rtOutput);
         traceInjectStage("after demodulate");
+        logInjectProbeStep("after demodulate");
 
         // Note: Primary direct diffuse/specular radiance textures noisy and in a demodulated state after demodulation step.
         if (captureScreenImage && captureDebugImage) {
@@ -742,8 +750,10 @@ namespace dxvk {
         }
 
         // Denoising
+        logInjectProbeStep("before denoise");
         dispatchDenoise(rtOutput);
         traceInjectStage("after denoise");
+        logInjectProbeStep("after denoise");
         if (stopAfterStage(10u, "after denoise"))
           goto inject_probe_fallback;
 
@@ -754,24 +764,31 @@ namespace dxvk {
         }
 
         // Composition
+        logInjectProbeStep("before composite");
         dispatchComposite(rtOutput);
         traceInjectStage("after composite");
+        logInjectProbeStep("after composite");
         if (stopAfterStage(11u, "after composite"))
           goto inject_probe_fallback;
 
         // Post composite Debug View that may overwrite Composite output
+        logInjectProbeStep("before debug-view-composite");
         dispatchReplaceCompositeWithDebugView(rtOutput);
         traceInjectStage("after debug-view-composite");
+        logInjectProbeStep("after debug-view-composite");
         
         if (captureScreenImage && captureDebugImage) {
           takeScreenshot("rtxImagePostComposite", rtOutput.m_compositeOutput.resource(Resources::AccessType::Read).image);
         }
 
+        logInjectProbeStep("before object-picking");
         getCommonObjects()->getTextureManager().copySamplerFeedbackToHost(this);
         dispatchObjectPicking(rtOutput, downscaledExtent, targetImage->info().extent);
         traceInjectStage("after object-picking");
+        logInjectProbeStep("after object-picking");
 
         // Upscaling if DLSS/NIS enabled, or the Composition Pass will do upscaling
+        logInjectProbeStep("before upscaler-or-copy");
         if (m_currentUpscaler == InternalUpscaler::DLSS) {
           // xxxnsubtil: the DLSS indicator reads our exposure texture even with DLSS autoexposure on
           // make sure it has been created, otherwise we run into trouble on the first frame
@@ -797,23 +814,30 @@ namespace dxvk {
             { 0, 0, 0 },
             rtOutput.m_compositeOutputExtent);
         }
-          traceInjectStage("after upscaler-or-copy");
+        traceInjectStage("after upscaler-or-copy");
+        logInjectProbeStep("after upscaler-or-copy");
         m_previousUpscaler = m_currentUpscaler;
 
         RtxDustParticles& dust = m_common->metaDustParticles();
+        logInjectProbeStep("before dust");
         dust.simulateAndDraw(this, m_state, rtOutput);
-          traceInjectStage("after dust");
+        traceInjectStage("after dust");
+        logInjectProbeStep("after dust");
 
+        logInjectProbeStep("before bloom-postfx");
         dispatchBloom(rtOutput);
         dispatchPostFx(rtOutput);
-          traceInjectStage("after bloom-postfx");
+        traceInjectStage("after bloom-postfx");
+        logInjectProbeStep("after bloom-postfx");
 
         // Tone mapping
         // WAR for TREX-553 - disable sRGB conversion as NVTT implicitly applies it during dds->png
         // conversion for 16bit float formats
         const bool performSRGBConversion = !captureScreenImage && g_allowSrgbConversionForOutput;
+        logInjectProbeStep("before tone-mapping");
         dispatchToneMapping(rtOutput, performSRGBConversion);
         traceInjectStage("after tone-mapping");
+        logInjectProbeStep("after tone-mapping");
         if (stopAfterStage(12u, "after tone-mapping"))
           goto inject_probe_fallback;
 
@@ -834,20 +858,26 @@ namespace dxvk {
         Rc<DxvkImage> srcImage = rtOutput.m_finalOutput.resource(Resources::AccessType::Read).image;
 
         // Debug view
+        logInjectProbeStep("before debug-view");
         dispatchDebugView(srcImage, rtOutput, captureScreenImage);
         traceInjectStage("after debug-view");
+        logInjectProbeStep("after debug-view");
 
+        logInjectProbeStep("before dlfg");
         dispatchDLFG();
         traceInjectStage("after dlfg");
+        logInjectProbeStep("after dlfg");
 
         // Blit to the game target
         {
           ScopedGpuProfileZone(this, "Blit to Game");
+          logInjectProbeStep("before blit-to-game");
           
           // Note: the resolution between srcImage and dstImage always matches
           // so we can use the same blit with nearest neighbor filtering
           assert(srcImage->info().extent == targetImage->info().extent);
           blitImageHelper(this, srcImage, targetImage, VkFilter::VK_FILTER_NEAREST);
+          logInjectProbeStep("after blit-to-game");
         }
         if (stopAfterStage(13u, "after blit-to-game"))
           goto inject_probe_fallback;
@@ -858,11 +888,13 @@ namespace dxvk {
           getSceneManager().logStatistics();
         }
 
+        logInjectProbeStep("before scene-on-frame-end");
         m_common->metaNeuralRadianceCache().onFrameEnd(rtOutput);
         getSceneManager().onFrameEnd(this);
 
         rtOutput.onFrameEnd();
         traceInjectStage("after scene-on-frame-end");
+        logInjectProbeStep("after scene-on-frame-end");
         if (stopAfterStage(14u, "after scene-on-frame-end"))
           goto inject_probe_fallback;
       } else {
@@ -1630,37 +1662,65 @@ namespace dxvk {
   void RtxContext::dispatchIntegrate(const Resources::RaytracingOutput& rtOutput) {
     ScopedGpuProfileZone(this, "Integrate Raytracing");
 
+    auto logPathTracingProbeStep = [this](const char* step) {
+      if (isD3D11InjectProbeActive()) {
+        Logger::warn(str::format("D3D11: RtxContext::dispatchIntegrate ", step, "."));
+      }
+    };
+
     // Integrate direct
+    logPathTracingProbeStep("before direct-dispatch");
     m_common->metaPathtracerIntegrateDirect().dispatch(this, rtOutput);
+    logPathTracingProbeStep("after direct-dispatch");
 
     // RTXDI Gradient pass
+    logPathTracingProbeStep("before rtxdi-gradient");
     m_common->metaRtxdiRayQuery().dispatchGradient(this, rtOutput);
+    logPathTracingProbeStep("after rtxdi-gradient");
 
     // Integrate indirect
     {
       ScopedGpuProfileZone(this, "Integrate Indirect Raytracing");
       setFramePassStage(RtxFramePassStage::IndirectIntegration);
       
+      logPathTracingProbeStep("before indirect-dispatch");
       m_common->metaPathtracerIntegrateIndirect().dispatch(this, rtOutput);
+      logPathTracingProbeStep("after indirect-dispatch");
     }
 
     // Integrate indirect - NEE Cache pass
+    logPathTracingProbeStep("before indirect-nee-dispatch");
     m_common->metaPathtracerIntegrateIndirect().dispatchNEE(this, rtOutput);
+    logPathTracingProbeStep("after indirect-nee-dispatch");
   }
 
   void RtxContext::dispatchPathTracing(const Resources::RaytracingOutput& rtOutput) {
 
+    auto logPathTracingProbeStep = [this](const char* step) {
+      if (isD3D11InjectProbeActive()) {
+        Logger::warn(str::format("D3D11: RtxContext::dispatchPathTracing ", step, "."));
+      }
+    };
+
     // Gbuffer Raytracing
+    logPathTracingProbeStep("before gbuffer-dispatch");
     m_common->metaPathtracerGbuffer().dispatch(this, rtOutput);
+    logPathTracingProbeStep("after gbuffer-dispatch");
 
     // RTXDI
+    logPathTracingProbeStep("before rtxdi-dispatch");
     m_common->metaRtxdiRayQuery().dispatch(this, rtOutput);
+    logPathTracingProbeStep("after rtxdi-dispatch");
 
     // NEE Cache
+    logPathTracingProbeStep("before nee-cache-dispatch");
     dispatchNeeCache(rtOutput);
+    logPathTracingProbeStep("after nee-cache-dispatch");
 
     // Integration Raytracing
+    logPathTracingProbeStep("before integrate-dispatch");
     dispatchIntegrate(rtOutput);
+    logPathTracingProbeStep("after integrate-dispatch");
   }
   
   void RtxContext::dispatchDemodulate(const Resources::RaytracingOutput& rtOutput) {

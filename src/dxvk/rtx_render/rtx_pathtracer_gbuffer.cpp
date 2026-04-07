@@ -280,9 +280,17 @@ namespace dxvk {
     ScopedGpuProfileZone(ctx, "Gbuffer Raytracing");
     ctx->setFramePassStage(RtxFramePassStage::GBufferPrimaryRays);
 
+    auto logGbufferProbeStep = [ctx](const char* step) {
+      if (ctx != nullptr && ctx->isD3D11InjectProbeActive()) {
+        Logger::warn(str::format("D3D11: DxvkPathtracerGbuffer::dispatch ", step, "."));
+      }
+    };
+
     // Bind resources
+    logGbufferProbeStep("before bind-common-resources");
 
     ctx->bindCommonRayTracingResources(rtOutput);
+    logGbufferProbeStep("after bind-common-resources");
 
     // Note: Clamp to edge used to avoid interpolation to black on the edges of the view.
     Rc<DxvkSampler> linearClampSampler = ctx->getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
@@ -376,28 +384,52 @@ namespace dxvk {
     // Bind necessary resources for Neural Radiance Cache
     NeuralRadianceCache& nrc = ctx->getCommonObjects()->metaNeuralRadianceCache();
     nrc.bindGBufferPathTracingResources(*ctx);    
+    logGbufferProbeStep("after bind-gbuffer-resources");
   
+    logGbufferProbeStep("before ray-dims");
     const VkExtent3D& rayDims = rtOutput.m_compositeOutputExtent;
+    logGbufferProbeStep("after ray-dims");
 
+    logGbufferProbeStep("before nrc-is-active");
     const bool nrcEnabled = nrc.isActive();
+    logGbufferProbeStep("after nrc-is-active");
+    logGbufferProbeStep("before ser-enabled");
     const bool serEnabled = RtxOptions::isShaderExecutionReorderingInPathtracerGbufferEnabled();
-    const bool ommEnabled = RtxOptions::getEnableOpacityMicromap();
+    logGbufferProbeStep("after ser-enabled");
+    logGbufferProbeStep("before omm-enabled");
+    const bool ommEnabled = ctx->isD3D11RemixEnabled() ? false : RtxOptions::getEnableOpacityMicromap();
+    if (ctx->isD3D11InjectProbeActive() && ctx->isD3D11RemixEnabled()) {
+      Logger::warn("D3D11: DxvkPathtracerGbuffer::dispatch forcing omm-enabled=false on the experimental D3D11 Remix path.");
+    }
+    logGbufferProbeStep("after omm-enabled");
+    logGbufferProbeStep("before include-portals");
     const bool includePortals = RtxOptions::rayPortalModelTextureHashes().size() > 0 || rtOutput.m_raytraceArgs.numActiveRayPortals > 0;
+    logGbufferProbeStep("after include-portals");
+    logGbufferProbeStep("before wboit-enabled");
     const bool wboitEnabled = RtxOptions::wboitEnabled();
+    logGbufferProbeStep("after wboit-enabled");
 
     GbufferPushConstants pushArgs = {};
     pushArgs.isTransmissionPSR = 0;
+    logGbufferProbeStep("before set-push-constant-bank");
     ctx->setPushConstantBank(DxvkPushConstantBank::RTX);
+    logGbufferProbeStep("after set-push-constant-bank");
+    logGbufferProbeStep("before push-constants");
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
+    logGbufferProbeStep("after push-constants");
 
+    logGbufferProbeStep("before mode-switch");
 
     switch (RtxOptions::renderPassGBufferRaytraceMode()) {
     case RaytraceMode::RayQuery: {
+      logGbufferProbeStep("mode-rayquery");
       VkExtent3D workgroups = util::computeBlockCount(rayDims, VkExtent3D { 16, 8, 1 });
       {
         ScopedGpuProfileZone(ctx, "Primary Rays");
+        logGbufferProbeStep("before primary-rays");
         ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getComputeShader(false, nrcEnabled, wboitEnabled));
         ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
+        logGbufferProbeStep("after primary-rays");
       }
 
       {
@@ -405,8 +437,10 @@ namespace dxvk {
         // PSR data dependencies due to resource aliasing.
         ScopedGpuProfileZone(ctx, "Reflection PSR");
         ctx->setFramePassStage(RtxFramePassStage::ReflectionPSR);
+        logGbufferProbeStep("before reflection-psr");
         ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getComputeShader(true, nrcEnabled, wboitEnabled));
         ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
+        logGbufferProbeStep("after reflection-psr");
       }
 
       {
@@ -414,16 +448,21 @@ namespace dxvk {
         ctx->setFramePassStage(RtxFramePassStage::TransmissionPSR);
         pushArgs.isTransmissionPSR = 1;
         ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
+        logGbufferProbeStep("before transmission-psr");
         ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
+        logGbufferProbeStep("after transmission-psr");
       }
       break;
     }
 
       case RaytraceMode::RayQueryRayGen:
       {
+        logGbufferProbeStep("mode-rayquery-raygen");
         ScopedGpuProfileZone(ctx, "Primary Rays");
+        logGbufferProbeStep("before primary-rays");
         ctx->bindRaytracingPipelineShaders(getPipelineShaders(false, true, serEnabled, ommEnabled, includePortals, nrcEnabled, wboitEnabled));
         ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+        logGbufferProbeStep("after primary-rays");
       }
 
       {
@@ -431,8 +470,10 @@ namespace dxvk {
         // PSR data dependencies due to resource aliasing.
         ScopedGpuProfileZone(ctx, "Reflection PSR");
         ctx->setFramePassStage(RtxFramePassStage::ReflectionPSR);
+        logGbufferProbeStep("before reflection-psr");
         ctx->bindRaytracingPipelineShaders(getPipelineShaders(true, true, serEnabled, ommEnabled, includePortals, nrcEnabled, wboitEnabled));
         ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+        logGbufferProbeStep("after reflection-psr");
       }
 
       {
@@ -440,15 +481,20 @@ namespace dxvk {
         ctx->setFramePassStage(RtxFramePassStage::TransmissionPSR);
         pushArgs.isTransmissionPSR = 1;
         ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
+        logGbufferProbeStep("before transmission-psr");
         ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+        logGbufferProbeStep("after transmission-psr");
       }
       break;
 
       case RaytraceMode::TraceRay:
       {
+        logGbufferProbeStep("mode-traceray");
         ScopedGpuProfileZone(ctx, "Primary Rays");
+        logGbufferProbeStep("before primary-rays");
         ctx->bindRaytracingPipelineShaders(getPipelineShaders(false, false, serEnabled, ommEnabled, includePortals, nrcEnabled, wboitEnabled));
         ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+        logGbufferProbeStep("after primary-rays");
       }
 
       {
@@ -456,8 +502,10 @@ namespace dxvk {
         // PSR data dependencies due to resource aliasing.
         ScopedGpuProfileZone(ctx, "Reflection PSR");
         ctx->setFramePassStage(RtxFramePassStage::ReflectionPSR);
+        logGbufferProbeStep("before reflection-psr");
         ctx->bindRaytracingPipelineShaders(getPipelineShaders(true, false, serEnabled, ommEnabled, includePortals, nrcEnabled, wboitEnabled));
         ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+        logGbufferProbeStep("after reflection-psr");
       }
 
       {
@@ -465,7 +513,9 @@ namespace dxvk {
         ctx->setFramePassStage(RtxFramePassStage::TransmissionPSR);
         pushArgs.isTransmissionPSR = 1;
         ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
+        logGbufferProbeStep("before transmission-psr");
         ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+        logGbufferProbeStep("after transmission-psr");
       }
       break;
       case RaytraceMode::Count:
