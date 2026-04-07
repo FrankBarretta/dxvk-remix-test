@@ -587,6 +587,7 @@ struct DrawCallState {
   bool zEnable = false;
 
   uint32_t drawCallID = 0;
+  uint32_t remixDebugCommitStage = 0;
 
   bool isDrawingToRaytracedRenderTarget = false;
   bool isUsingRaytracedRenderTarget = false;

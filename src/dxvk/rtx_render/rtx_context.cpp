@@ -862,6 +862,8 @@ namespace dxvk {
   void RtxContext::commitGeometryToRT(const DrawParameters& params, DrawCallState& drawCallState){
     ScopedCpuProfileZone();
 
+    drawCallState.remixDebugCommitStage = 1;
+
     RasterGeometry& geoData = drawCallState.geometryData;
     DrawCallTransforms& transformData = drawCallState.transformData;
 
@@ -892,10 +894,13 @@ namespace dxvk {
 
     // Sync any pending work with geometry processing threads
     if (drawCallState.finalizePendingFutures(lastCamera)) {
+      drawCallState.remixDebugCommitStage = 2;
       drawCallState.cameraType = cameraManager.processCameraData(drawCallState);
+      drawCallState.remixDebugCommitStage = 3;
 
       if (drawCallState.cameraType == CameraType::Unknown) {
         if (RtxOptions::skipObjectsWithUnknownCamera()) {
+          drawCallState.remixDebugCommitStage = 4;
           return;
         }
         // fallback
@@ -903,12 +908,16 @@ namespace dxvk {
       }
 
       if (tryHandleSky(&params, &drawCallState) == TryHandleSkyResult::SkipSubmit) {
+        drawCallState.remixDebugCommitStage = 5;
         return;
       }
+
+      drawCallState.remixDebugCommitStage = 6;
 
       // Bake the terrain
       const MaterialData* overrideMaterialData = nullptr;
       bakeTerrain(params, drawCallState, &overrideMaterialData);
+      drawCallState.remixDebugCommitStage = 7;
 
     
       // An attempt to resolve cases where games pre-combine view and world matrices
@@ -924,6 +933,7 @@ namespace dxvk {
         transformData.objectToWorld = referenceCamera->getViewToWorld(false) * drawCallState.getTransformData().objectToView;
         transformData.worldToView = referenceCamera->getWorldToView(false);
       }
+      drawCallState.remixDebugCommitStage = 8;
       
       // Apply free camera transform when view space texGenMode is used.
       // Note: TerrainBaking already applies this transform for TexGenMode::CascadedViewPositions 
@@ -940,7 +950,12 @@ namespace dxvk {
         }
       }
 
+      drawCallState.remixDebugCommitStage = 9;
+
       getSceneManager().submitDrawState(this, drawCallState, overrideMaterialData);
+      drawCallState.remixDebugCommitStage = 10;
+    } else {
+      drawCallState.remixDebugCommitStage = 11;
     }
   }
 

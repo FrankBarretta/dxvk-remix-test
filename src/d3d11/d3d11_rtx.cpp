@@ -439,6 +439,37 @@ namespace dxvk {
   }
 
   namespace {
+    const char* getDx11AuxiliaryCommitStageName(uint32_t stage) {
+      switch (stage) {
+        case 0:
+          return "not-entered";
+        case 1:
+          return "entered";
+        case 2:
+          return "futures-finalized";
+        case 3:
+          return "camera-processed";
+        case 4:
+          return "unknown-camera-skipped";
+        case 5:
+          return "sky-skip-submit";
+        case 6:
+          return "sky-handled";
+        case 7:
+          return "terrain-baked";
+        case 8:
+          return "precombined-matrices-resolved";
+        case 9:
+          return "ready-to-submit-draw-state";
+        case 10:
+          return "submit-draw-state-complete";
+        case 11:
+          return "finalize-pending-futures-returned-false";
+        default:
+          return "unknown-stage";
+      }
+    }
+
     bool TryCommitGeometryToRt(RtxContext* rtxContext, const DrawParameters& params, DrawCallState& drawCallState) {
 #ifdef _MSC_VER
       __try {
@@ -853,6 +884,11 @@ namespace dxvk {
         m_loggedAuxiliaryBackendFaultWarning = true;
         Logger::warn("D3D11: Disabling the auxiliary RTX command stream after a backend fault. Falling back to telemetry-only DX11 Remix behavior.");
       }
+
+      Logger::warn(str::format(
+        "D3D11: Auxiliary commitGeometryToRT faulted for drawCallID ", drawCallState.drawCallID,
+        " after stage ", drawCallState.remixDebugCommitStage,
+        " (", getDx11AuxiliaryCommitStageName(drawCallState.remixDebugCommitStage), ")."));
 
       if (faultCount <= 4u) {
         Logger::warn(str::format("D3D11: Suppressing further Remix geometry capture until the next frame after backend fault ", faultCount, "."));
