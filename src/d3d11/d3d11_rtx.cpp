@@ -24,6 +24,7 @@ namespace dxvk {
 
   namespace {
     constexpr uint32_t kGeometryFaultLogInterval = 256u;
+    constexpr uint64_t kAuxiliaryPilotCaptureFrameInterval = 120u;
 
     struct D3D11RtxResolvedAttribute {
       DxvkVertexAttribute attribute;
@@ -445,6 +446,34 @@ namespace dxvk {
           return "not-entered";
         case 1:
           return "entered";
+        case 45:
+          return "update-instance-enter";
+        case 46:
+          return "update-instance-frame-state";
+        case 47:
+          return "update-instance-first-update-gate";
+        case 58:
+          return "update-instance-skip-associated-geometry-hash-d3d11-remix";
+        case 48:
+          return "update-instance-process-buffers";
+        case 49:
+          return "update-instance-material-hashes";
+        case 50:
+          return "update-instance-surface-metadata";
+        case 51:
+          return "update-instance-associated-geometry-hash";
+        case 52:
+          return "update-instance-transform";
+        case 53:
+          return "update-instance-instance-flags";
+        case 54:
+          return "update-instance-mask";
+        case 55:
+          return "update-instance-billboards";
+        case 56:
+          return "update-instance-callbacks";
+        case 57:
+          return "update-instance-complete";
         case 101:
           return "finalize-pending-futures-entered";
         case 102:
@@ -486,11 +515,51 @@ namespace dxvk {
         case 137:
           return "skinning-complete";
         case 141:
+          return "geometry-category-rule-copy";
+        case 147:
           return "geometry-category-hash";
+        case 148:
+          return "geometry-category-skipped-d3d11-remix";
         case 142:
           return "geometry-category-lookup";
         case 143:
           return "geometry-category-complete";
+        case 144:
+          return "geometry-asset-hash-geometry-component";
+        case 160:
+          return "geometry-asset-hash-positions";
+        case 170:
+          return "geometry-asset-hash-rule-bits-copy";
+        case 171:
+          return "geometry-asset-hash-positions-rule-passed";
+        case 172:
+          return "geometry-asset-hash-positions-read";
+        case 173:
+          return "geometry-asset-hash-positions-read-complete";
+        case 174:
+          return "geometry-asset-hash-positions-combined";
+        case 161:
+          return "geometry-asset-hash-legacy-positions-0";
+        case 162:
+          return "geometry-asset-hash-legacy-positions-1";
+        case 163:
+          return "geometry-asset-hash-texcoords";
+        case 164:
+          return "geometry-asset-hash-indices";
+        case 165:
+          return "geometry-asset-hash-legacy-indices";
+        case 166:
+          return "geometry-asset-hash-geometry-descriptor";
+        case 167:
+          return "geometry-asset-hash-vertex-layout";
+        case 168:
+          return "geometry-asset-hash-vertex-shader";
+        case 169:
+          return "geometry-asset-hash-geometry-complete";
+        case 145:
+          return "geometry-asset-hash-material-component";
+        case 146:
+          return "geometry-asset-hash-combined";
         case 2:
           return "futures-finalized";
         case 3:
@@ -511,6 +580,56 @@ namespace dxvk {
           return "submit-draw-state-complete";
         case 11:
           return "finalize-pending-futures-returned-false";
+        case 12:
+          return "submit-draw-state-enter";
+        case 13:
+          return "submit-draw-state-fog-processed";
+        case 14:
+          return "submit-draw-state-active-replacement-hash";
+        case 15:
+          return "submit-draw-state-track-mesh-hash";
+        case 16:
+          return "submit-draw-state-replacement-lookup";
+        case 17:
+          return "submit-draw-state-material-determined";
+        case 18:
+          return "submit-draw-state-draw-replacements";
+        case 19:
+          return "submit-draw-state-process-draw-call";
+        case 20:
+          return "submit-draw-state-exit";
+        case 21:
+          return "submit-draw-state-skip-replacement-lookup-d3d11-remix";
+        case 30:
+          return "process-draw-call-enter";
+        case 31:
+          return "process-draw-call-cache-lookup";
+        case 32:
+          return "process-draw-call-cache-hit";
+        case 33:
+          return "process-draw-call-cache-miss";
+        case 34:
+          return "process-draw-call-cache-result-ready";
+        case 35:
+          return "process-draw-call-dispatch-skinning";
+        case 36:
+          return "process-draw-call-process-scene-object";
+        case 37:
+          return "process-draw-call-create-effect-light";
+        case 38:
+          return "process-draw-call-object-picking-meta";
+        case 39:
+          return "process-draw-call-object-picking-lock";
+        case 40:
+          return "process-scene-object-enter";
+        case 41:
+          return "process-scene-object-find-similar-instance";
+        case 42:
+          return "process-scene-object-add-instance";
+        case 43:
+          return "process-scene-object-update-instance";
+        case 44:
+          return "process-scene-object-complete";
         default:
           return "unknown-stage";
       }
@@ -591,6 +710,16 @@ namespace dxvk {
     const DrawContext&                drawContext) {
     if (!m_enabled || m_geometryCaptureFaultedThisFrame.load(std::memory_order_relaxed))
       return;
+
+    if (!m_parent->UsesImmediateContextRtx()
+     && m_auxiliaryPilotCompleted.load(std::memory_order_relaxed)) {
+      if (!m_loggedAuxiliaryPilotCompletedWarning) {
+        m_loggedAuxiliaryPilotCompletedWarning = true;
+        Logger::warn("D3D11: Auxiliary Remix pilot already completed one successful capture; further DX11 geometry capture is disabled to preserve performance.");
+      }
+
+      return;
+    }
 
     if (!CanUseRtxExecutionContext()
      && m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
@@ -679,6 +808,19 @@ namespace dxvk {
 
       if (m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) >= 1u)
         return;
+
+      if (m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX
+       && m_reflexFrameId < m_lastAuxiliaryPilotCaptureFrame + kAuxiliaryPilotCaptureFrameInterval) {
+        if (!m_loggedAuxiliaryPilotThrottleWarning) {
+          m_loggedAuxiliaryPilotThrottleWarning = true;
+          Logger::warn(str::format(
+            "D3D11: Throttling the auxiliary Remix pilot to one supported draw every ",
+            kAuxiliaryPilotCaptureFrameInterval,
+            " frames while frame hooks remain disabled to avoid severe frame-time collapse."));
+        }
+
+        return;
+      }
     }
 
     VkIndexType indexType = VK_INDEX_TYPE_NONE_KHR;
@@ -912,12 +1054,19 @@ namespace dxvk {
     if (!m_parent->UsesImmediateContextRtx())
       m_auxiliaryPilotCapturesThisFrame.fetch_add(1u, std::memory_order_relaxed);
 
+    if (!m_parent->UsesImmediateContextRtx())
+      m_lastAuxiliaryPilotCaptureFrame = m_reflexFrameId;
+
     auto emitCommit = [this, params, drawCallState = std::move(drawCallState)](DxvkContext* ctx) mutable {
       RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::CommitGeometryToRT skipped because the command stream is not using an RTX context");
       if (rtxContext == nullptr)
         return;
 
       if (TryCommitGeometryToRt(rtxContext, params, drawCallState)) {
+        if (!m_parent->UsesImmediateContextRtx()) {
+          m_auxiliaryPilotCompleted.store(true, std::memory_order_relaxed);
+        }
+
         m_geometryCaptureFaultCount.store(0u, std::memory_order_relaxed);
         return;
       }

@@ -539,6 +539,8 @@ namespace dxvk {
     const CameraManager& cameraManager, const RayPortalManager& rayPortalManager,
     BlasEntry& blas, const DrawCallState& drawCall, MaterialData& materialData, RtInstance* existingInstance) {
 
+    drawCall.remixDebugCommitStage = 40;
+
     // If the RtInstance represents multiple instances, use the full transform of the first copy for the spatial map.
     // this prevents a bad de-duplication when the same replacement asset is used in multiple GeomPointInstancer prims.
     Matrix4 firstInstanceObjectToWorld = drawCall.getTransformData().calcFirstInstanceObjectToWorld();
@@ -548,15 +550,20 @@ namespace dxvk {
 
     // Search for an existing instance matching our input
     if (currentInstance == nullptr) {
+      drawCall.remixDebugCommitStage = 41;
       currentInstance = findSimilarInstance(blas, materialData, firstInstanceObjectToWorld, drawCall.cameraType, rayPortalManager);
     }
 
     if (currentInstance == nullptr) {
       // No existing match - so need to create one
+      drawCall.remixDebugCommitStage = 42;
       currentInstance = addInstance(blas);
     }
 
+    drawCall.remixDebugCommitStage = 43;
     updateInstance(*currentInstance, cameraManager, blas, drawCall, materialData);
+
+    drawCall.remixDebugCommitStage = 44;
    
     return currentInstance;
   }
@@ -984,10 +991,13 @@ namespace dxvk {
                                        const BlasEntry& blas,
                                        const DrawCallState& drawCall,
                                        MaterialData& materialData) {
+    drawCall.remixDebugCommitStage = 45;
+    const bool isD3D11Remix = m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false);
     currentInstance.m_categoryFlags = drawCall.getCategoryFlags();
     currentInstance.surface.instancesToObject = drawCall.getTransformData().instancesToObject;
 
     // setFrameLastUpdated() must be called first as it resets instance's state on a first call in a frame
+    drawCall.remixDebugCommitStage = 46;
     const bool isFirstUpdateThisFrame = currentInstance.setFrameLastUpdated(m_device->getCurrentFrameId());
 
     // These can change in the Runtime UI so need to check during update
@@ -1020,10 +1030,13 @@ namespace dxvk {
     
     // Updates done only once a frame unless overriden due to an explicit state
     if (isFirstUpdateThisFrame || overridePreviousCameraUpdate) {
+      drawCall.remixDebugCommitStage = 47;
 
       if (isFirstUpdateThisFrame) {
+        drawCall.remixDebugCommitStage = 48;
         processInstanceBuffers(blas, currentInstance);
 
+        drawCall.remixDebugCommitStage = 49;
         currentInstance.m_materialType = materialData.getType();
 
         const XXH64_hash_t materialInstanceHash = materialData.getHash();
@@ -1035,6 +1048,7 @@ namespace dxvk {
         currentInstance.m_indexHash = drawCall.getGeometryData().hashes[HashComponents::Indices];
 
         // Surface meta data
+        drawCall.remixDebugCommitStage = 50;
         currentInstance.surface.isEmissive = false;
         currentInstance.surface.isMatte = false;
         currentInstance.surface.textureColorArg1Source = drawCall.getMaterialData().textureColorArg1Source;
@@ -1047,7 +1061,13 @@ namespace dxvk {
         currentInstance.surface.tFactor = drawCall.getMaterialData().tFactor;
         currentInstance.surface.alphaState = alphaState;
         currentInstance.surface.isAnimatedWater = currentInstance.testCategoryFlags(InstanceCategories::AnimatedWater);
-        currentInstance.surface.associatedGeometryHash = drawCall.getHash(RtxOptions::geometryAssetHashRule());
+        if (isD3D11Remix) {
+          drawCall.remixDebugCommitStage = 58;
+          currentInstance.surface.associatedGeometryHash = kEmptyHash;
+        } else {
+          drawCall.remixDebugCommitStage = 51;
+          currentInstance.surface.associatedGeometryHash = drawCall.getHash(RtxOptions::geometryAssetHashRule());
+        }
         currentInstance.surface.isTextureFactorBlend = drawCall.getMaterialData().isTextureFactorBlend;
         currentInstance.surface.isVertexColorBakedLighting = drawCall.getMaterialData().isVertexColorBakedLighting;
         currentInstance.surface.isMotionBlurMaskOut = currentInstance.testCategoryFlags(InstanceCategories::IgnoreMotionBlur);
@@ -1115,6 +1135,7 @@ namespace dxvk {
 
       // Update transform
       {
+        drawCall.remixDebugCommitStage = 52;
         // Heuristic for MS5 - motion vectors on translucent surfaces cannot be trusted.  This will help with IQ, but need a longer term solution [TREX-634]
         const bool isMotionUnstable = currentInstance.m_materialType == MaterialDataType::Translucent
                                    || currentInstance.testCategoryFlags(InstanceCategories::Particle)
@@ -1157,6 +1178,7 @@ namespace dxvk {
     }
 
     // We only have 1 hit shader.
+    drawCall.remixDebugCommitStage = 53;
     currentInstance.m_vkInstance.instanceShaderBindingTableRecordOffset = 0;
 
     // Update instance flags.
@@ -1227,6 +1249,7 @@ namespace dxvk {
 
     // Update mask
     {
+      drawCall.remixDebugCommitStage = 54;
       uint mask = isFirstUpdateThisFrame ? 0 : currentInstance.m_vkInstance.mask;
 
       if (currentInstance.m_isPlayerModel && drawCall.cameraType != CameraType::ViewModel) {
@@ -1283,6 +1306,7 @@ namespace dxvk {
         currentInstance.m_isUnordered &&
         !currentInstance.m_isHidden &&
         currentInstance.getVkInstance().mask != 0) {
+      drawCall.remixDebugCommitStage = 55;
 
       if (currentInstance.testCategoryFlags(InstanceCategories::Beam)) {
         createBeams(currentInstance);
@@ -1296,11 +1320,14 @@ namespace dxvk {
     // Updates done only once a frame unless overriden due to an explicit state
     if (isFirstUpdateThisFrame || overridePreviousCameraUpdate ||
         (billboardsGotGenerated && RtxOptions::getEnableOpacityMicromap())) {
+      drawCall.remixDebugCommitStage = 56;
       // Inform the listeners
       for (auto& event : m_eventHandlers) {
         event.onInstanceUpdatedCallback(currentInstance, drawCall, materialData, hasTransformChanged, hasPreviousPositions, isFirstUpdateThisFrame);
       }
     }
+
+    drawCall.remixDebugCommitStage = 57;
   }
 
   void InstanceManager::removeInstance(RtInstance* instance) {

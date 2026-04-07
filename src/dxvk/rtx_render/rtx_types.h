@@ -529,8 +529,52 @@ struct DrawCallState {
   DrawCallState& operator=(const DrawCallState& drawCallState) = default;
 
   // Note: This uses the original material for the hash, not the replaced material
-  const XXH64_hash_t getHash(const HashRule& rule) const {
-    return geometryData.getHashForRule(rule) ^ materialData.getHash();
+  const XXH64_hash_t getHash(HashRule rule) const {
+    remixDebugCommitStage = 144;
+    remixDebugCommitStage = 170;
+    const uint32_t ruleBits = rule.raw();
+    XXH64_hash_t geometryHash = kEmptyHash;
+    for (uint32_t i = 0; i < static_cast<uint32_t>(HashComponents::Count); i++) {
+      const HashComponents component = static_cast<HashComponents>(i);
+      remixDebugCommitStage = 160 + i;
+
+      if (component == HashComponents::VertexPosition) {
+        remixDebugCommitStage = 171;
+        const bool includePosition = (ruleBits & (1u << i)) != 0;
+        if (!includePosition) {
+          continue;
+        }
+
+        remixDebugCommitStage = 172;
+        const XXH64_hash_t componentHash = geometryData.hashes[component];
+        remixDebugCommitStage = 173;
+        if (geometryHash == kEmptyHash) {
+          geometryHash = componentHash;
+        } else {
+          geometryHash = XXH64(&componentHash, sizeof(componentHash), geometryHash);
+        }
+        remixDebugCommitStage = 174;
+        continue;
+      }
+
+      if ((ruleBits & (1u << i)) == 0) {
+        continue;
+      }
+
+      const XXH64_hash_t componentHash = geometryData.hashes[component];
+      if (geometryHash == kEmptyHash) {
+        geometryHash = componentHash;
+      } else {
+        geometryHash = XXH64(&componentHash, sizeof(componentHash), geometryHash);
+      }
+    }
+
+    remixDebugCommitStage = 169;
+    assert(geometryHash != kEmptyHash);
+    remixDebugCommitStage = 145;
+    const XXH64_hash_t materialHash = materialData.getHash();
+    remixDebugCommitStage = 146;
+    return geometryHash ^ materialHash;
   }
 
   [[deprecated("(REMIX-656): Remove this once we can transition content to new hash")]]
@@ -562,7 +606,7 @@ struct DrawCallState {
     return categories;
   }
 
-  bool finalizePendingFutures(const RtCamera* pLastCamera);
+  bool finalizePendingFutures(const RtCamera* pLastCamera, bool enableGeometryCategories = true);
 
   bool hasTextureCoordinates() const {
     return getGeometryData().texcoordBuffer.defined() || getTransformData().texgenMode != TexGenMode::None;
@@ -587,7 +631,7 @@ struct DrawCallState {
   bool zEnable = false;
 
   uint32_t drawCallID = 0;
-  uint32_t remixDebugCommitStage = 0;
+  mutable uint32_t remixDebugCommitStage = 0;
 
   bool isDrawingToRaytracedRenderTarget = false;
   bool isUsingRaytracedRenderTarget = false;

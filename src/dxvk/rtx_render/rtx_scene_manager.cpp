@@ -536,11 +536,14 @@ namespace dxvk {
 
   void SceneManager::submitDrawState(Rc<DxvkContext> ctx, const DrawCallState& input, const MaterialData* overrideMaterialData) {
     ScopedCpuProfileZone();
+    input.remixDebugCommitStage = 12;
+    const bool isD3D11Remix = ctx->getDevice()->instance()->config().getOption<bool>("d3d11.enableRemix", false);
     if (m_bufferCache.getTotalCount() >= kBufferCacheLimit && m_bufferCache.getActiveCount() >= kBufferCacheLimit) {
       ONCE(Logger::info("[RTX-Compatibility-Info] This application is pushing more unique buffers than is currently supported - some objects may not raytrace."));
       return;
     }
 
+    input.remixDebugCommitStage = 13;
     if (input.getFogState().mode != D3DFOG_NONE) {
       XXH64_hash_t fogHash = input.getFogState().getHash();
       if (m_fogStates.find(fogHash) == m_fogStates.end()) {
@@ -567,17 +570,25 @@ namespace dxvk {
         }
       }
     }
+    XXH64_hash_t activeReplacementHash = kEmptyHash;
+    std::vector<AssetReplacement>* pReplacements = nullptr;
 
+    if (isD3D11Remix) {
+      input.remixDebugCommitStage = 21;
+    } else {
+      input.remixDebugCommitStage = 14;
+      activeReplacementHash = input.getHash(RtxOptions::geometryAssetHashRule());
 
-    const XXH64_hash_t activeReplacementHash = input.getHash(RtxOptions::geometryAssetHashRule());
-    
-    // Track this mesh hash for mesh hash checking
-    trackMeshHash(activeReplacementHash);
-    
-    std::vector<AssetReplacement>* pReplacements = m_pReplacer->getReplacementsForMesh(activeReplacementHash);
+      // Track this mesh hash for mesh hash checking
+      input.remixDebugCommitStage = 15;
+      trackMeshHash(activeReplacementHash);
+
+      input.remixDebugCommitStage = 16;
+      pReplacements = m_pReplacer->getReplacementsForMesh(activeReplacementHash);
+    }
 
     // TODO (REMIX-656): Remove this once we can transition content to new hash
-    if ((RtxOptions::geometryHashGenerationRule() & rules::LegacyAssetHash0) == rules::LegacyAssetHash0) {
+    if (!isD3D11Remix && (RtxOptions::geometryHashGenerationRule() & rules::LegacyAssetHash0) == rules::LegacyAssetHash0) {
       if (!pReplacements) {
         const XXH64_hash_t legacyHash = input.getHashLegacy(rules::LegacyAssetHash0);
         trackMeshHash(legacyHash);
@@ -589,7 +600,7 @@ namespace dxvk {
       }
     }
 
-    if ((RtxOptions::geometryHashGenerationRule() & rules::LegacyAssetHash1) == rules::LegacyAssetHash1) {
+    if (!isD3D11Remix && (RtxOptions::geometryHashGenerationRule() & rules::LegacyAssetHash1) == rules::LegacyAssetHash1) {
       if (!pReplacements) {
         const XXH64_hash_t legacyHash = input.getHashLegacy(rules::LegacyAssetHash1);
         trackMeshHash(legacyHash);
@@ -601,13 +612,18 @@ namespace dxvk {
       }
     }
 
+    input.remixDebugCommitStage = 17;
     MaterialData renderMaterialData = determineMaterialData(overrideMaterialData, input);
 
     if (pReplacements != nullptr) {
+      input.remixDebugCommitStage = 18;
       drawReplacements(ctx, &input, pReplacements, renderMaterialData);
     } else {
+      input.remixDebugCommitStage = 19;
       processDrawCallState(ctx, input, renderMaterialData, nullptr, nullptr);
     }
+
+    input.remixDebugCommitStage = 20;
   }
 
   MaterialData SceneManager::determineMaterialData(const MaterialData* overrideMaterialData, const DrawCallState& input) {
@@ -981,18 +997,24 @@ namespace dxvk {
   RtInstance* SceneManager::processDrawCallState(Rc<DxvkContext> ctx, const DrawCallState& drawCallState, MaterialData& renderMaterialData, RtInstance* existingInstance, const RtxParticleSystemDesc* pParticleSystemDesc) {
     ScopedCpuProfileZone();
 
+    drawCallState.remixDebugCommitStage = 30;
+
     if (renderMaterialData.getIgnored()) {
       return nullptr;
     }
 
     ObjectCacheState result = ObjectCacheState::kInvalid;
     BlasEntry* pBlas = nullptr;
+    drawCallState.remixDebugCommitStage = 31;
     if (m_drawCallCache.get(drawCallState, &pBlas) == DrawCallCache::CacheState::kExisted) {
+      drawCallState.remixDebugCommitStage = 32;
       result = onSceneObjectUpdated(ctx, drawCallState, pBlas);
     } else {
+      drawCallState.remixDebugCommitStage = 33;
       result = onSceneObjectAdded(ctx, drawCallState, pBlas);
     }
     
+    drawCallState.remixDebugCommitStage = 34;
     assert(pBlas != nullptr);
     assert(result != ObjectCacheState::kInvalid);
 
@@ -1002,15 +1024,18 @@ namespace dxvk {
     if (drawCallState.getSkinningState().numBones > 0 &&
         drawCallState.getGeometryData().numBonesPerVertex > 0 &&
         (result == ObjectCacheState::KBuildBVH || result == ObjectCacheState::kUpdateBVH)) {
+      drawCallState.remixDebugCommitStage = 35;
       m_device->getCommon()->metaGeometryUtils().dispatchSkinning(drawCallState, pBlas->modifiedGeometryData);
       pBlas->frameLastUpdated = pBlas->frameLastTouched;
     }
 
     // Note: The material data can be modified in instance manager
+    drawCallState.remixDebugCommitStage = 36;
     RtInstance* instance = m_instanceManager.processSceneObject(m_cameraManager, m_rayPortalManager, *pBlas, drawCallState, renderMaterialData, existingInstance);
 
     // Check if a light should be created for this Material
     if (instance && RtxOptions::shouldConvertToLight(drawCallState.getMaterialData().getHash())) {
+      drawCallState.remixDebugCommitStage = 37;
       createEffectLight(ctx, drawCallState, instance);
     }
 
@@ -1018,6 +1043,7 @@ namespace dxvk {
       .m_primaryObjectPicking.isValid();
 
     if (objectPickingActive && instance && g_allowMappingLegacyHashToObjectPickingValue) {
+      drawCallState.remixDebugCommitStage = 38;
       auto meta = DrawCallMetaInfo {};
       {
         XXH64_hash_t h;
@@ -1032,6 +1058,7 @@ namespace dxvk {
       }
 
       {
+        drawCallState.remixDebugCommitStage = 39;
         std::lock_guard lock { m_drawCallMeta.mutex };
         auto [iter, isNew] = m_drawCallMeta.infos[m_drawCallMeta.ticker].emplace(instance->surface.objectPickingValue, meta);
         ONCE_IF_FALSE(isNew, Logger::warn(

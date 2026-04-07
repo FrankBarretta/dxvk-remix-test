@@ -252,7 +252,7 @@ namespace dxvk {
     }
   }
 
-  bool DrawCallState::finalizePendingFutures(const RtCamera* pLastCamera) {
+  bool DrawCallState::finalizePendingFutures(const RtCamera* pLastCamera, bool enableGeometryCategories) {
     ScopedCpuProfileZone();
     remixDebugCommitStage = 101;
     // Geometry hashes are vital, and cannot be disabled, so its important we get valid data (hence the return type)
@@ -268,7 +268,11 @@ namespace dxvk {
 
       remixDebugCommitStage = 104;
       // Update any categories that require geometry hash
-      setupCategoriesForGeometry();
+      if (enableGeometryCategories) {
+        setupCategoriesForGeometry();
+      } else {
+        remixDebugCommitStage = 148;
+      }
 
       remixDebugCommitStage = 105;
       return true;
@@ -399,7 +403,10 @@ namespace dxvk {
 
   void DrawCallState::setupCategoriesForGeometry() {
     remixDebugCommitStage = 141;
-    const XXH64_hash_t assetReplacementHash = getHash(RtxOptions::geometryAssetHashRule());
+    const HashRule assetHashRule = RtxOptions::geometryAssetHashRule();
+
+    remixDebugCommitStage = 147;
+    const XXH64_hash_t assetReplacementHash = getHash(assetHashRule);
 
     remixDebugCommitStage = 142;
     setCategory(InstanceCategories::Sky, lookupHash(RtxOptions::skyBoxGeometries(), assetReplacementHash));

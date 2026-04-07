@@ -893,7 +893,7 @@ namespace dxvk {
         : nullptr;
 
     // Sync any pending work with geometry processing threads
-    if (drawCallState.finalizePendingFutures(lastCamera)) {
+    if (drawCallState.finalizePendingFutures(lastCamera, !m_isD3D11Remix)) {
       drawCallState.remixDebugCommitStage = 2;
       drawCallState.cameraType = cameraManager.processCameraData(drawCallState);
       drawCallState.remixDebugCommitStage = 3;
