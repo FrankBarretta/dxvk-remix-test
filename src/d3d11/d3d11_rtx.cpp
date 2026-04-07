@@ -486,7 +486,11 @@ namespace dxvk {
 
     if (CanUseRtxExecutionContext() && !m_loggedExperimentalWarning) {
       m_loggedExperimentalWarning = true;
-      Logger::warn("D3D11: Experimental Remix path enabled. D3D11 draws feed an auxiliary RTX command stream for supported triangle captures.");
+      if (!m_parent->UsesImmediateContextRtx()) {
+        Logger::warn("D3D11: Experimental auxiliary Remix pilot enabled. DX11 currently captures at most one indexed triangle-list draw per frame while frame hooks remain disabled.");
+      } else {
+        Logger::warn("D3D11: Experimental Remix path enabled. D3D11 draws feed an auxiliary RTX command stream for supported triangle captures.");
+      }
     }
 
     if (!CanUseRtxExecutionContext() && !m_loggedTelemetryOnlyWarning) {
@@ -548,29 +552,18 @@ namespace dxvk {
       Logger::info("D3D11: Remix transform telemetry is complete; stopping further constant-buffer scans on the stable path.");
     }
 
-    if (!m_parent->UsesImmediateContextRtx()) {
-      if (!m_loggedAuxiliaryGeometryIsolationWarning) {
-        m_loggedAuxiliaryGeometryIsolationWarning = true;
-        Logger::warn("D3D11: Auxiliary RTX geometry submission is still disabled during DX11 isolation, so the RTX backend will remain dormant to avoid collapsing performance.");
-      }
-
-      if (!m_loggedAuxiliaryDormantWarning
-       && m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
-       && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed)) {
-        m_loggedAuxiliaryDormantWarning = true;
-        Logger::warn("D3D11: DX11 Remix has the required transforms, but auxiliary backend arming is deferred until geometry submission is re-enabled.");
-      }
-
-      return;
-    }
-
     if (!CanUseRtxExecutionContext()
      && m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
      && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed)) {
       if (!EnsureRtxExecutionContextLocked())
         return;
 
-      if (!m_loggedExperimentalWarning) {
+      if (!m_parent->UsesImmediateContextRtx()) {
+        if (!m_loggedAuxiliaryPilotModeWarning) {
+          m_loggedAuxiliaryPilotModeWarning = true;
+          Logger::warn("D3D11: Experimental auxiliary Remix pilot enabled. DX11 currently captures at most one indexed triangle-list draw per frame while frame hooks remain disabled.");
+        }
+      } else if (!m_loggedExperimentalWarning) {
         m_loggedExperimentalWarning = true;
         Logger::warn("D3D11: Experimental Remix path enabled. D3D11 draws feed an auxiliary RTX command stream for supported triangle captures.");
       }
@@ -592,6 +585,24 @@ namespace dxvk {
     VkPrimitiveTopology vkTopology = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
     if (!isSupportedTopology(iaState.primitiveTopology, vkTopology))
       return;
+
+    if (!m_parent->UsesImmediateContextRtx()) {
+      const bool supportedPilotDraw = resolvedDrawContext.indexed
+        && resolvedDrawContext.instanceCount <= 1u
+        && vkTopology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+      if (!supportedPilotDraw) {
+        if (!m_loggedAuxiliaryPilotFilterWarning) {
+          m_loggedAuxiliaryPilotFilterWarning = true;
+          Logger::warn("D3D11: Auxiliary Remix pilot is skipping non-indexed, instanced, or non-triangle-list draws while geometry capture is reintroduced incrementally.");
+        }
+
+        return;
+      }
+
+      if (m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) >= 1u)
+        return;
+    }
 
     VkIndexType indexType = VK_INDEX_TYPE_NONE_KHR;
     if (resolvedDrawContext.indexed) {
@@ -821,6 +832,9 @@ namespace dxvk {
       ? static_cast<uint32_t>(resolvedDrawContext.vertexOffset)
       : resolvedDrawContext.firstVertex;
 
+    if (!m_parent->UsesImmediateContextRtx())
+      m_auxiliaryPilotCapturesThisFrame.fetch_add(1u, std::memory_order_relaxed);
+
     auto emitCommit = [this, params, drawCallState = std::move(drawCallState)](DxvkContext* ctx) mutable {
       RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::CommitGeometryToRT skipped because the command stream is not using an RTX context");
       if (rtxContext == nullptr)
@@ -1001,6 +1015,10 @@ namespace dxvk {
       return;
 
     std::lock_guard<std::mutex> lock(m_mutex);
+    m_geometryCaptureFaultedThisFrame.store(false, std::memory_order_relaxed);
+    m_hasProjectionMatrixThisFrame.store(false, std::memory_order_relaxed);
+    m_auxiliaryPilotCapturesThisFrame.store(0u, std::memory_order_relaxed);
+    m_pendingDrawCalls = 0;
     m_reflexFrameId += 1;
   }
 
