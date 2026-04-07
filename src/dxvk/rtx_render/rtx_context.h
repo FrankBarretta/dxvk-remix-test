@@ -161,6 +161,8 @@ namespace dxvk {
 
   private:
     bool m_isD3D11Remix = false;
+    uint32_t m_d3d11InjectRtxStageLimit = 0;
+    uint32_t m_d3d11LastInjectRtxProbeStage = 0;
 
     // This enum is for internal use only.
     // There is a mode called UpscalerType in RtxOptions, but it doesn't contain DLSS-RR because RR is considered as a special mode of DLSS.

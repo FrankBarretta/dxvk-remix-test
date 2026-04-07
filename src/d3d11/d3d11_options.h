@@ -37,6 +37,22 @@ namespace dxvk {
     /// before the D3D11 Remix pilot scene-capture end frame.
     bool remixPilotEnableResetScreenResolution;
 
+    /// Enables an auxiliary present hook after the D3D11
+    /// Remix pilot scene-capture end frame.
+    bool remixPilotEnableOnPresent;
+
+    /// Enables a full auxiliary end-of-frame hook for the
+    /// D3D11 Remix pilot while keeping injectRTX disabled.
+    bool remixPilotEnableFullEndFrame;
+
+    /// Enables injectRTX during the auxiliary full end-of-frame
+    /// hook for the D3D11 Remix pilot.
+    bool remixPilotEnableInjectRtx;
+
+    /// Limits the auxiliary D3D11 Remix injectRTX probe to a
+    /// maximum completed inject stage before falling back.
+    int32_t remixPilotInjectRtxStageLimit;
+
     /// Enables speed hack for mapping on deferred contexts
     ///
     /// This can substantially speed up some games, but may

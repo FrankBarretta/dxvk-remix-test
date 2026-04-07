@@ -126,6 +126,10 @@ namespace dxvk {
     bool m_loggedAuxiliaryPilotResetWarning = false;
     bool m_loggedAuxiliarySceneCaptureEndFrameWarning = false;
     bool m_loggedAuxiliaryResetScreenResolutionWarning = false;
+    bool m_loggedAuxiliaryOnPresentWarning = false;
+    bool m_loggedAuxiliaryFullEndFrameWarning = false;
+    bool m_loggedAuxiliaryInjectRtxProbeWarning = false;
+    bool m_loggedAuxiliaryInjectRtxDisabledWarning = false;
     bool m_loggedAuxiliaryBackendFaultWarning = false;
     std::atomic<bool> m_geometryCaptureFaultedThisFrame = false;
     std::atomic<bool> m_auxiliaryBackendFaulted = false;

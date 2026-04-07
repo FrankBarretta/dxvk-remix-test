@@ -1185,34 +1185,79 @@ namespace dxvk {
 
     const bool traceFrame = m_reflexFrameId < 8;
     const bool useAuxiliarySceneCaptureOnly = !m_parent->UsesImmediateContextRtx();
+    const bool useAuxiliaryFullEndFrame = useAuxiliarySceneCaptureOnly
+      && m_parent->GetOptions()->remixPilotEnableFullEndFrame;
+    const uint32_t auxiliaryInjectRtxStageLimit = static_cast<uint32_t>(std::max(0, m_parent->GetOptions()->remixPilotInjectRtxStageLimit));
+    const bool useAuxiliaryInjectRtxRequested = useAuxiliaryFullEndFrame
+      && m_parent->GetOptions()->remixPilotEnableInjectRtx;
+    const bool useAuxiliaryInjectRtxProbe = useAuxiliaryInjectRtxRequested
+      && auxiliaryInjectRtxStageLimit > 0u;
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::EndFrame enter");
 
     if (useAuxiliarySceneCaptureOnly) {
-      if (!m_loggedAuxiliarySceneCaptureEndFrameWarning) {
-        m_loggedAuxiliarySceneCaptureEndFrameWarning = true;
-        Logger::warn("D3D11: Auxiliary Remix pilot is running endFrameSceneCaptureOnly after successful geometry capture.");
-      }
-
       context->Flush();
       SynchronizeRtxCs();
 
-      auto emitSceneCaptureOnlyEndFrame = [traceFrame](DxvkContext* ctx) {
-        if (traceFrame)
-          D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary CS begin");
+      if (useAuxiliaryFullEndFrame) {
+        if (!useAuxiliaryInjectRtxProbe && !m_loggedAuxiliaryFullEndFrameWarning) {
+          m_loggedAuxiliaryFullEndFrameWarning = true;
+          Logger::warn("D3D11: Auxiliary Remix pilot is running full endFrame with injectRTX still disabled after successful geometry capture.");
+        }
 
-        RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::EndFrame auxiliary scene capture skipped because the command stream is not using an RTX context");
-        if (rtxContext == nullptr)
-          return;
+        if (useAuxiliaryInjectRtxProbe && !m_loggedAuxiliaryInjectRtxProbeWarning) {
+          m_loggedAuxiliaryInjectRtxProbeWarning = true;
+          Logger::warn(str::format(
+            "D3D11: Auxiliary Remix pilot is probing injectRTX up to stage ",
+            auxiliaryInjectRtxStageLimit,
+            " before falling back to the stable full endFrame path."));
+        }
 
-        rtxContext->endFrameSceneCaptureOnly();
+        if (useAuxiliaryInjectRtxRequested && !useAuxiliaryInjectRtxProbe && !m_loggedAuxiliaryInjectRtxDisabledWarning) {
+          m_loggedAuxiliaryInjectRtxDisabledWarning = true;
+          Logger::warn("D3D11: Auxiliary injectRTX was requested, but it is currently disabled after reproducing a post-load crash on Days Gone. Falling back to the previously stable full endFrame path.");
+        }
 
-        if (traceFrame)
-          D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary CS after endFrameSceneCaptureOnly");
-      };
+        const auto currentReflexFrameId = m_reflexFrameId;
+        auto emitAuxiliaryFullEndFrame = [currentReflexFrameId, targetImage, traceFrame, useAuxiliaryInjectRtxProbe](DxvkContext* ctx) {
+          if (traceFrame)
+            D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary full CS begin");
 
-      EmitRtxCs(std::move(emitSceneCaptureOnlyEndFrame));
+          RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::EndFrame auxiliary full end frame skipped because the command stream is not using an RTX context");
+          if (rtxContext == nullptr)
+            return;
+
+          rtxContext->endFrame(currentReflexFrameId, targetImage, useAuxiliaryInjectRtxProbe);
+
+          if (traceFrame)
+            D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary full CS after rtxContext->endFrame");
+        };
+
+        EmitRtxCs(std::move(emitAuxiliaryFullEndFrame));
+      } else {
+        if (!m_loggedAuxiliarySceneCaptureEndFrameWarning) {
+          m_loggedAuxiliarySceneCaptureEndFrameWarning = true;
+          Logger::warn("D3D11: Auxiliary Remix pilot is running endFrameSceneCaptureOnly after successful geometry capture.");
+        }
+
+        auto emitSceneCaptureOnlyEndFrame = [traceFrame](DxvkContext* ctx) {
+          if (traceFrame)
+            D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary CS begin");
+
+          RtxContext* rtxContext = getRtxContextOrTrace(ctx, "D3D11Rtx::EndFrame auxiliary scene capture skipped because the command stream is not using an RTX context");
+          if (rtxContext == nullptr)
+            return;
+
+          rtxContext->endFrameSceneCaptureOnly();
+
+          if (traceFrame)
+            D3D11EarlyTrace("D3D11Rtx::EndFrame auxiliary CS after endFrameSceneCaptureOnly");
+        };
+
+        EmitRtxCs(std::move(emitSceneCaptureOnlyEndFrame));
+      }
+
       SynchronizeRtxCs();
 
       m_geometryCaptureFaultedThisFrame.store(false, std::memory_order_relaxed);
@@ -1264,9 +1309,6 @@ namespace dxvk {
   void D3D11Rtx::OnPresent(
           D3D11ImmediateContext*      context,
     const Rc<DxvkImage>&              targetImage) {
-    if (!m_parent->UsesImmediateContextRtx())
-      return;
-
     if (!m_enabled || !CanUseRtxExecutionContext())
       return;
 
@@ -1274,9 +1316,15 @@ namespace dxvk {
     D3D10DeviceLock contextLock = context->LockContext();
 
     const bool traceFrame = m_reflexFrameId < 8;
+    const bool useAuxiliaryOnPresent = !m_parent->UsesImmediateContextRtx();
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::OnPresent enter");
+
+    if (useAuxiliaryOnPresent && !m_loggedAuxiliaryOnPresentWarning) {
+      m_loggedAuxiliaryOnPresentWarning = true;
+      Logger::warn("D3D11: Auxiliary Remix pilot is running OnPresent after successful scene capture.");
+    }
 
     auto emitOnPresent = [targetImage, traceFrame](DxvkContext* ctx) {
       if (traceFrame)
@@ -1295,7 +1343,14 @@ namespace dxvk {
         D3D11EarlyTrace("D3D11Rtx::OnPresent CS after rtxContext->onPresent");
     };
 
-    context->EmitCs(std::move(emitOnPresent));
+    if (useAuxiliaryOnPresent) {
+      context->Flush();
+      SynchronizeRtxCs();
+      EmitRtxCs(std::move(emitOnPresent));
+      SynchronizeRtxCs();
+    } else {
+      context->EmitCs(std::move(emitOnPresent));
+    }
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::OnPresent EmitCs queued");

@@ -197,6 +197,7 @@ namespace dxvk {
     DxvkEarlyTrace("RtxContext::RtxContext running time initialized");
 
     m_isD3D11Remix = m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false);
+    m_d3d11InjectRtxStageLimit = static_cast<uint32_t>(std::max(0, m_device->instance()->config().getOption<int32_t>("d3d11.remixPilotInjectRtxStageLimit", 0)));
     if (m_isD3D11Remix) {
       DxvkEarlyTrace("RtxContext::RtxContext skipping checkOpacityMicromapSupport for D3D11 Remix");
     } else {
@@ -449,6 +450,38 @@ namespace dxvk {
     m_currentPassStage = RtxFramePassStage::FrameBegin;
 #endif
 
+    bool injectProbeTriggered = false;
+
+    auto traceInjectStage = [this](const char* stage) {
+      if (m_isD3D11Remix) {
+        const std::string message = str::format("RtxContext::injectRTX ", stage);
+        D3D11EarlyTrace(message.c_str());
+      }
+    };
+
+    auto stopAfterStage = [this, &injectProbeTriggered, &traceInjectStage](uint32_t stageId, const char* stageName) {
+      if (!m_isD3D11Remix || m_d3d11InjectRtxStageLimit == 0u || stageId < m_d3d11InjectRtxStageLimit) {
+        return false;
+      }
+
+      traceInjectStage(stageName);
+
+      if (m_d3d11LastInjectRtxProbeStage != stageId) {
+        m_d3d11LastInjectRtxProbeStage = stageId;
+        Logger::warn(str::format(
+          "D3D11: Auxiliary injectRTX probe reached stage ",
+          stageId,
+          " (",
+          stageName,
+          ") and is falling back before executing later injectRTX work."));
+      }
+
+      injectProbeTriggered = true;
+      return true;
+    };
+
+    traceInjectStage("enter");
+
     if (RtxOptions::enableBreakIntoDebuggerOnPressingB() && ImGUI::checkHotkeyState({VirtualKey{ 'B' }}, true)) {
       while (!::IsDebuggerPresent()) {
         ::Sleep(100);
@@ -457,6 +490,9 @@ namespace dxvk {
     }
 
     commitGraphicsState<true, false>();
+    traceInjectStage("after commitGraphicsState");
+    if (stopAfterStage(1u, "after commitGraphicsState"))
+      goto inject_probe_fallback;
 
     auto common = getCommonObjects();
     const auto isRaytracingEnabled = RtxOptions::enableRaytracing();
@@ -481,6 +517,9 @@ namespace dxvk {
     const auto computedPresentThrottleDelay = std::max(requestedPresentThrottleDelay, requestedAsyncShaderCompilationDelay);
 
     m_device->setPresentThrottleDelay(computedPresentThrottleDelay);
+    traceInjectStage("after present-throttle");
+    if (stopAfterStage(2u, "after present-throttle"))
+      goto inject_probe_fallback;
 
     // Early out if ray tracing is not supported or if Remix has already been injected
 
@@ -492,11 +531,13 @@ namespace dxvk {
     if (m_frameLastInjected == m_device->getCurrentFrameId()) {
       return;
     }
+    traceInjectStage("after already-injected check");
 
     const bool isCameraValid = getSceneManager().getCamera().isValid(m_device->getCurrentFrameId());
     if (!isCameraValid) {
       ONCE(Logger::info(str::format("[RTX-Compatibility-Info] Trying to raytrace but not detecting a valid camera.")));
     }
+    traceInjectStage(isCameraValid ? "camera-valid" : "camera-invalid");
 
     // Update frame counter only after actual rendering
     if (isCameraValid) {
@@ -510,6 +551,9 @@ namespace dxvk {
     if (DxvkDLFG::enable() && !common->metaDLFG().supportsDLFG()) {
       DxvkDLFG::enable.setDeferred(false);
     }
+    traceInjectStage("after upscaler-validation");
+    if (stopAfterStage(3u, "after upscaler-validation"))
+      goto inject_probe_fallback;
     
 #ifdef REMIX_DEVELOPMENT
     // Update the Shader Manager
@@ -518,6 +562,7 @@ namespace dxvk {
 #endif
 
     const float gpuIdleTimeMilliseconds = getGpuIdleTimeSinceLastCall();
+    traceInjectStage("after gpu-idle-sample");
 
     // Note: Only engage ray tracing when it is enabled, the camera is valid and when no shaders are currently being compiled asynchronously (as
     // trying to render before shaders are done compiling will cause Remix to block).
@@ -525,6 +570,9 @@ namespace dxvk {
       if (targetImage == nullptr) {
         targetImage = m_state.om.renderTargets.color[0].view->image();  
       }
+      traceInjectStage("target-image-ready");
+      if (stopAfterStage(4u, "target-image-ready"))
+        goto inject_probe_fallback;
 
       const bool captureTestScreenshot = (m_screenshotFrameEnabled && m_device->getCurrentFrameId() == m_screenshotFrameNum);
       const bool captureScreenImage = s_triggerScreenshot || (captureTestScreenshot && !s_capturePrePresentTestScreenshot);
@@ -553,12 +601,18 @@ namespace dxvk {
 
       RtxParticleSystemManager& particles = m_device->getCommon()->metaParticleSystem();
       particles.submitDrawState(this);
+      traceInjectStage("after particle-submit");
 
       this->spillRenderPass(false);
+      traceInjectStage("after spill-render-pass");
 
       getCommonObjects()->getTextureManager().submitTexturesToDeviceLocal(this, m_execBarriers, m_execAcquires);
+      traceInjectStage("after texture-submit");
 
       m_execBarriers.recordCommands(m_cmd);
+      traceInjectStage("after barrier-record");
+      if (stopAfterStage(5u, "after barrier-record"))
+        goto inject_probe_fallback;
 
       ScopedGpuProfileZone(this, "InjectRTX");
 
@@ -571,14 +625,22 @@ namespace dxvk {
 
       m_submitContainsInjectRtx = true;
       m_cachedReflexFrameId = cachedReflexFrameId;
+      traceInjectStage("after reflex-state");
 
       // Update all the GPU buffers needed to describe the scene
       getSceneManager().prepareSceneData(this, m_execBarriers);
+      traceInjectStage("after prepare-scene-data");
+      if (stopAfterStage(6u, "after prepare-scene-data"))
+        goto inject_probe_fallback;
       
       // If we really don't have any RT to do, just bail early (could be UI/menus rendering)
       if (getSceneManager().getSurfaceBuffer() != nullptr) {
+        traceInjectStage("surface-buffer-present");
 
         VkExtent3D downscaledExtent = onFrameBegin(targetImage->info().extent);
+        traceInjectStage("after on-frame-begin");
+        if (stopAfterStage(7u, "after on-frame-begin"))
+          goto inject_probe_fallback;
 
         Resources::RaytracingOutput& rtOutput = getResourceManager().getRaytracingOutput();
 
@@ -591,24 +653,35 @@ namespace dxvk {
         rtOutput.m_primaryScreenSpaceMotionVector = rtOutput.m_primaryScreenSpaceMotionVectorQueue.get();
 
         getCommonObjects()->getTextureManager().prepareSamplerFeedback(this);
+        traceInjectStage("after sampler-feedback-prepare");
 
         // Generate ray tracing constant buffer
         updateRaytraceArgsConstantBuffer(rtOutput, downscaledExtent, targetImage->info().extent);
+        traceInjectStage("after update-raytrace-args");
+        if (stopAfterStage(8u, "after update-raytrace-args"))
+          goto inject_probe_fallback;
 
         // Volumetric Lighting
         dispatchVolumetrics(rtOutput);
+        traceInjectStage("after volumetrics");
         
         // Path Tracing
         dispatchPathTracing(rtOutput);
+        traceInjectStage("after path-tracing");
+        if (stopAfterStage(9u, "after path-tracing"))
+          goto inject_probe_fallback;
 
         // Neural Radiance Cache
         m_common->metaNeuralRadianceCache().dispatchTrainingAndResolve(*this, rtOutput);
+        traceInjectStage("after nrc");
 
         // RTXDI confidence
         m_common->metaRtxdiRayQuery().dispatchConfidence(this, rtOutput);
+        traceInjectStage("after rtxdi-confidence");
 
         // ReSTIR GI
         m_common->metaReSTIRGIRayQuery().dispatch(this, rtOutput);
+        traceInjectStage("after restir-gi");
         
         if (captureScreenImage && captureDebugImage) {
           takeScreenshot("baseReflectivity", rtOutput.m_primaryBaseReflectivity.image(Resources::AccessType::Read));
@@ -618,6 +691,7 @@ namespace dxvk {
 
         // Demodulation
         dispatchDemodulate(rtOutput);
+        traceInjectStage("after demodulate");
 
         // Note: Primary direct diffuse/specular radiance textures noisy and in a demodulated state after demodulation step.
         if (captureScreenImage && captureDebugImage) {
@@ -627,6 +701,9 @@ namespace dxvk {
 
         // Denoising
         dispatchDenoise(rtOutput);
+        traceInjectStage("after denoise");
+        if (stopAfterStage(10u, "after denoise"))
+          goto inject_probe_fallback;
 
         // Note: Primary direct diffuse/specular radiance textures denoised but in a still demodulated state after denoising step.
         if (captureScreenImage && captureDebugImage) {
@@ -636,9 +713,13 @@ namespace dxvk {
 
         // Composition
         dispatchComposite(rtOutput);
+        traceInjectStage("after composite");
+        if (stopAfterStage(11u, "after composite"))
+          goto inject_probe_fallback;
 
         // Post composite Debug View that may overwrite Composite output
         dispatchReplaceCompositeWithDebugView(rtOutput);
+        traceInjectStage("after debug-view-composite");
         
         if (captureScreenImage && captureDebugImage) {
           takeScreenshot("rtxImagePostComposite", rtOutput.m_compositeOutput.resource(Resources::AccessType::Read).image);
@@ -646,6 +727,7 @@ namespace dxvk {
 
         getCommonObjects()->getTextureManager().copySamplerFeedbackToHost(this);
         dispatchObjectPicking(rtOutput, downscaledExtent, targetImage->info().extent);
+        traceInjectStage("after object-picking");
 
         // Upscaling if DLSS/NIS enabled, or the Composition Pass will do upscaling
         if (m_currentUpscaler == InternalUpscaler::DLSS) {
@@ -673,19 +755,25 @@ namespace dxvk {
             { 0, 0, 0 },
             rtOutput.m_compositeOutputExtent);
         }
+          traceInjectStage("after upscaler-or-copy");
         m_previousUpscaler = m_currentUpscaler;
 
         RtxDustParticles& dust = m_common->metaDustParticles();
         dust.simulateAndDraw(this, m_state, rtOutput);
+          traceInjectStage("after dust");
 
         dispatchBloom(rtOutput);
         dispatchPostFx(rtOutput);
+          traceInjectStage("after bloom-postfx");
 
         // Tone mapping
         // WAR for TREX-553 - disable sRGB conversion as NVTT implicitly applies it during dds->png
         // conversion for 16bit float formats
         const bool performSRGBConversion = !captureScreenImage && g_allowSrgbConversionForOutput;
         dispatchToneMapping(rtOutput, performSRGBConversion);
+        traceInjectStage("after tone-mapping");
+        if (stopAfterStage(12u, "after tone-mapping"))
+          goto inject_probe_fallback;
 
         if (captureScreenImage) {
           if (m_common->metaDebugView().debugViewIdx() == DEBUG_VIEW_DISABLED) {
@@ -705,8 +793,10 @@ namespace dxvk {
 
         // Debug view
         dispatchDebugView(srcImage, rtOutput, captureScreenImage);
+        traceInjectStage("after debug-view");
 
         dispatchDLFG();
+        traceInjectStage("after dlfg");
 
         // Blit to the game target
         {
@@ -717,6 +807,9 @@ namespace dxvk {
           assert(srcImage->info().extent == targetImage->info().extent);
           blitImageHelper(this, srcImage, targetImage, VkFilter::VK_FILTER_NEAREST);
         }
+        if (stopAfterStage(13u, "after blit-to-game"))
+          goto inject_probe_fallback;
+        traceInjectStage("after blit-to-game");
 
         // Log stats when an image is taken
         if (captureScreenImage) {
@@ -727,27 +820,47 @@ namespace dxvk {
         getSceneManager().onFrameEnd(this);
 
         rtOutput.onFrameEnd();
+        traceInjectStage("after scene-on-frame-end");
+        if (stopAfterStage(14u, "after scene-on-frame-end"))
+          goto inject_probe_fallback;
+      } else {
+        traceInjectStage("surface-buffer-missing");
       }
 
       m_previousInjectRtxHadScene = true;
+      traceInjectStage("mark-previous-injected-scene");
     } else {
       getSceneManager().clear(this, m_previousInjectRtxHadScene);
       m_previousInjectRtxHadScene = false;
 
       getSceneManager().onFrameEndNoRTX();
+      traceInjectStage("after no-rt fallback");
     }
 
+      goto inject_finalize;
+
+    inject_probe_fallback:
+      getSceneManager().clear(this, m_previousInjectRtxHadScene);
+      m_previousInjectRtxHadScene = false;
+      getSceneManager().onFrameEndNoRTX();
+      traceInjectStage("after inject-probe-fallback");
+
+    inject_finalize:
     // Reset the fog state to get it re-discovered on the next frame
     getSceneManager().clearFogState();
+    traceInjectStage("after clear-fog-state");
 
     // apply changes to RtxOptions after the frame has ended
     RtxOptionManager::applyPendingValuesOptionLayers();
     RtxOptionManager::applyPendingValues(m_device.ptr());
+    traceInjectStage("after apply-pending-options");
 
     // Update stats
     updateMetrics(gpuIdleTimeMilliseconds);
+    traceInjectStage("after update-metrics");
 
     m_resetHistory = false;
+    traceInjectStage("complete");
   }
 
   void RtxContext::endFrame(std::uint64_t cachedReflexFrameId, Rc<DxvkImage> targetImage, bool callInjectRtx) {

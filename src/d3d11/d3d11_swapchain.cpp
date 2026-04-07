@@ -553,6 +553,9 @@ namespace dxvk {
       if (tracePresent)
         D3D11EarlyTrace("D3D11SwapChain::PresentImage ImGUI render complete");
 
+      const bool useAuxiliaryOnPresent = useAuxiliarySceneCaptureEndFrame
+        && m_parent->GetOptions()->remixPilotEnableOnPresent;
+
       if (useRemixPresentPath) {
         D3D11EarlyTrace("D3D11SwapChain::PresentImage remix skipping RTX OnPresent");
         m_parent->RTX().AdvanceFrameIdForPresentBypass();
@@ -561,6 +564,11 @@ namespace dxvk {
 
         if (tracePresent)
           D3D11EarlyTrace("D3D11SwapChain::PresentImage after RTX OnPresent");
+      } else if (useAuxiliaryOnPresent) {
+        m_parent->RTX().OnPresent(immediateContext, m_imageViews.at(imageIndex)->image());
+
+        if (tracePresent)
+          D3D11EarlyTrace("D3D11SwapChain::PresentImage after auxiliary RTX OnPresent");
       } else if (useAuxiliarySceneCaptureEndFrame) {
         m_parent->RTX().AdvanceFrameIdForPresentBypass();
       }

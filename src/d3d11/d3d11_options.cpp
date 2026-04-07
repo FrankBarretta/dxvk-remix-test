@@ -14,6 +14,10 @@ namespace dxvk {
     this->remixPilotMaxSuccessfulCaptures = config.getOption<int32_t>("d3d11.remixPilotMaxSuccessfulCaptures", 1);
     this->remixPilotEnableSceneCaptureEndFrame = config.getOption<bool>("d3d11.remixPilotEnableSceneCaptureEndFrame", false);
     this->remixPilotEnableResetScreenResolution = config.getOption<bool>("d3d11.remixPilotEnableResetScreenResolution", false);
+    this->remixPilotEnableOnPresent = config.getOption<bool>("d3d11.remixPilotEnableOnPresent", false);
+    this->remixPilotEnableFullEndFrame = config.getOption<bool>("d3d11.remixPilotEnableFullEndFrame", false);
+    this->remixPilotEnableInjectRtx = config.getOption<bool>("d3d11.remixPilotEnableInjectRtx", false);
+    this->remixPilotInjectRtxStageLimit = config.getOption<int32_t>("d3d11.remixPilotInjectRtxStageLimit", 0);
     this->dcSingleUseMode       = config.getOption<bool>("d3d11.dcSingleUseMode", true);
     this->enableRtOutputNanFixup   = config.getOption<bool>("d3d11.enableRtOutputNanFixup", false);
     this->zeroInitWorkgroupMemory  = config.getOption<bool>("d3d11.zeroInitWorkgroupMemory", false);
