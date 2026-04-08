@@ -89,6 +89,18 @@ namespace Commands {
     IDirect3D9Ex_CreateDeviceEx,
     IDirect3D9Ex_GetAdapterLUID,
 
+    IDXGIFactory1_CreateFactory,
+    IDXGIFactory1_EnumAdapters1,
+    ID3D11Bridge_CreateDevice,
+    ID3D11Bridge_CreateTexture2D,
+    ID3D11Bridge_CreateRenderTargetView,
+    ID3D11Bridge_CreateShaderResourceView,
+    ID3D11Bridge_CreateDepthStencilView,
+    ID3D11Bridge_CreateBlendState,
+    ID3D11Bridge_CreateDepthStencilState,
+    ID3D11Bridge_CreateRasterizerState,
+    ID3D11Bridge_CreateSamplerState,
+
 
     IDirect3DDevice9Ex_QueryInterface,
     IDirect3DDevice9Ex_AddRef,
@@ -521,6 +533,17 @@ namespace Commands {
     case IDirect3D9Ex_GetAdapterDisplayModeEx: return "IDirect3D9Ex_GetAdapterDisplayModeEx";
     case IDirect3D9Ex_CreateDeviceEx: return "IDirect3D9Ex_CreateDeviceEx";
     case IDirect3D9Ex_GetAdapterLUID: return "IDirect3D9Ex_GetAdapterLUID";
+    case IDXGIFactory1_CreateFactory: return "IDXGIFactory1_CreateFactory";
+    case IDXGIFactory1_EnumAdapters1: return "IDXGIFactory1_EnumAdapters1";
+    case ID3D11Bridge_CreateDevice: return "ID3D11Bridge_CreateDevice";
+    case ID3D11Bridge_CreateTexture2D: return "ID3D11Bridge_CreateTexture2D";
+    case ID3D11Bridge_CreateRenderTargetView: return "ID3D11Bridge_CreateRenderTargetView";
+    case ID3D11Bridge_CreateShaderResourceView: return "ID3D11Bridge_CreateShaderResourceView";
+    case ID3D11Bridge_CreateDepthStencilView: return "ID3D11Bridge_CreateDepthStencilView";
+    case ID3D11Bridge_CreateBlendState: return "ID3D11Bridge_CreateBlendState";
+    case ID3D11Bridge_CreateDepthStencilState: return "ID3D11Bridge_CreateDepthStencilState";
+    case ID3D11Bridge_CreateRasterizerState: return "ID3D11Bridge_CreateRasterizerState";
+    case ID3D11Bridge_CreateSamplerState: return "ID3D11Bridge_CreateSamplerState";
 
     case IDirect3DDevice9Ex_QueryInterface: return "IDirect3DDevice9Ex_QueryInterface";
     case IDirect3DDevice9Ex_AddRef: return "IDirect3DDevice9Ex_AddRef";

@@ -47,15 +47,37 @@
 #endif
 
 #define LAUNCHER_NAME "NvRemixLauncher" TARGET_SUFFIX ".exe"
-#define INJECTION_NAME "d3d9.dll"
+
+namespace {
+
+  constexpr const char* kDefaultBridgeApi = "d3d9";
+
+  const char* getInjectionNameForApi(const char* apiName) {
+    if (apiName == nullptr) {
+      return nullptr;
+    }
+
+    if (_stricmp(apiName, "d3d9") == 0) {
+      return "d3d9.dll";
+    }
+
+    if (_stricmp(apiName, "d3d11") == 0) {
+      return "d3d11.dll";
+    }
+
+    return nullptr;
+  }
+
+}
 
 static void PrintUsage(void) {
   printf("Usage:\n"
-         "    " LAUNCHER_NAME " [-w work folder] [-i] <command line>\n\n");
+         "    " LAUNCHER_NAME " [-w work folder] [-i] [-api d3d9|d3d11] <command line>\n\n");
   printf("The <command line> MUST contain full path to the executable file and the command line options if any.\n\n");
   printf("Options:\n");
   printf("    -w : set working folder if different from executable path in command line.\n");
   printf("    -i : attempt DLL injection instead of changing the search path.\n");
+  printf("    -api : select the bridge client DLL to inject or expose in the search path. Defaults to d3d9.\n");
 }
 
 #ifdef _DEBUG
@@ -95,6 +117,7 @@ int CDECL main(int argc, char** argv) {
 
   CHAR szChildCWD[1024] = { 0 };
   bool doInject = false;
+  const char* bridgeApi = kDefaultBridgeApi;
 
   int arg = 1;
 
@@ -111,6 +134,20 @@ int CDECL main(int argc, char** argv) {
       PathUnquoteSpacesA(szChildCWD);
     } else if (strstr(argv[arg], "-i") == argv[arg]) {
       doInject = true;
+    } else if (strstr(argv[arg], "-api") == argv[arg]) {
+      ++arg;
+
+      if (arg >= argc) {
+        printf(LAUNCHER_NAME ": Error: missing API name after -api. Supported values are d3d9 and d3d11.\n");
+        return -1;
+      }
+
+      bridgeApi = argv[arg];
+
+      if (getInjectionNameForApi(bridgeApi) == nullptr) {
+        printf(LAUNCHER_NAME ": Error: unsupported API '%s'. Supported values are d3d9 and d3d11.\n", bridgeApi);
+        return -1;
+      }
     } else {
       break;
     }
@@ -141,11 +178,12 @@ int CDECL main(int argc, char** argv) {
   }
 
   CHAR szDllInjectionPath[1024];
+  const char* injectionName = getInjectionNameForApi(bridgeApi);
   if (doInject) {
     // Validate Remix dll is injectable just in case
     PCHAR pszFilePart = NULL;
-    if (!GetFullPathNameA(INJECTION_NAME, ARRAYSIZE(szDllInjectionPath), szDllInjectionPath, &pszFilePart)) {
-      printf(LAUNCHER_NAME ": Error: %s is not a valid path name.\n", INJECTION_NAME);
+    if (!GetFullPathNameA(injectionName, ARRAYSIZE(szDllInjectionPath), szDllInjectionPath, &pszFilePart)) {
+      printf(LAUNCHER_NAME ": Error: %s is not a valid path name.\n", injectionName);
       return 9002;
     }
   }

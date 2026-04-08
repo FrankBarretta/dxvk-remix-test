@@ -25,6 +25,7 @@
 #include "util_devicecommand.h"
 #include "config/global_options.h"
 
+#include <algorithm>
 #include <assert.h>
 
 using namespace bridge_util;
@@ -91,9 +92,11 @@ bool SharedHeap::Instance::addNewHeapSegment() {
   const std::string shMemName =
     std::string("SharedHeap_data_") + std::to_string(m_segments.size());
   bool bSuccess = false;
-  const size_t segmentSizeUnaligned = std::min((kMax32BitHeapSize - getTotalHeapSize()), m_defaultSegmentSize);
+  const size_t segmentSizeUnaligned = std::min<size_t>(
+    static_cast<size_t>(kMax32BitHeapSize) - getTotalHeapSize(),
+    static_cast<size_t>(m_defaultSegmentSize));
   // Align segment size to chunk size
-  size_t segmentSize = segmentSizeUnaligned & ~(m_chunkSize - 1);
+  size_t segmentSize = segmentSizeUnaligned & ~static_cast<size_t>(m_chunkSize - 1);
   Logger::debug("[SharedHeap][addNewHeapSegment] Attempting to create new SharedHeap segment.");
   while (!bSuccess && (segmentSize > m_chunkSize)) {
     try {
@@ -123,8 +126,7 @@ bool SharedHeap::Instance::addNewHeapSegment() {
   }
   return bSuccess;
 }
-#endif
-#ifdef REMIX_BRIDGE_SERVER
+#elif defined(REMIX_BRIDGE_SERVER)
 void SharedHeap::Instance::addNewHeapSegment(const uint32_t segmentSize) {
   bool bSuccess = false;
   try {
@@ -199,9 +201,7 @@ SharedHeap::AllocId SharedHeap::Instance::allocate(const size_t size) {
 void SharedHeap::Instance::deallocate(const AllocId id) {
   ClientMessage c(Commands::Bridge_SharedHeap_Dealloc, id);
 }
-#endif
-
-#ifdef REMIX_BRIDGE_SERVER
+#elif defined(REMIX_BRIDGE_SERVER)
 void SharedHeap::Instance::allocate(const AllocId id, const ChunkId firstChunk) {
   m_cache[id] = firstChunk;
 }

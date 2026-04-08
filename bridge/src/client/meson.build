@@ -55,9 +55,25 @@ d3d9_src = files([
   'window.cpp',
 ])
 
+d3d11_src = files([
+  'bridge_client_bootstrap.cpp',
+  'd3d11_device_proxy.cpp',
+  'd3d11_bootstrap.cpp',
+])
+
+dxgi_src = files([
+  'bridge_client_bootstrap.cpp',
+  'dxgi_bootstrap.cpp',
+  'dxgi_proxy.cpp',
+])
+
 d3d9_header = files([
   'base.h',
+  'bridge_client_bootstrap.h',
+  'client_api_forwarder.h',
   'client_options.h',
+  'd3d11_device_proxy.h',
+  'dxgi_proxy.h',
   'd3d9_base_texture.h',
   'd3d9_commonshader.h',
   'd3d9_cubetexture.h',
@@ -96,6 +112,14 @@ d3d9_def = files([
   'd3d9_lss.def',
 ])
 
+d3d11_def = files([
+  'd3d11_lss.def',
+])
+
+dxgi_def = files([
+  'dxgi_lss.def',
+])
+
 detours_include_path = include_directories('../../../submodules/Detours/src')
 
 thread_dep = dependency('threads')
@@ -105,6 +129,18 @@ d3d9_dll = shared_library('d3d9', d3d9_header, d3d9_src, d3d9_res,
   dependencies        : [ thread_dep, util_dep, lib_version, lib_version, lib_commCtrl, tracy_dep ],
   include_directories : [ bridge_include_path, util_include_path, detours_include_path, public_include_path ],
   vs_module_defs      : 'd3d9_lss.def')
+
+d3d11_dll = shared_library('d3d11', d3d11_src,
+  sources             : [ bridge_version ],
+  dependencies        : [ thread_dep, util_dep, lib_version, lib_commCtrl, tracy_dep ],
+  include_directories : [ bridge_include_path, util_include_path, public_include_path ],
+  vs_module_defs      : 'd3d11_lss.def')
+
+dxgi_dll = shared_library('dxgi', dxgi_src,
+  sources             : [ bridge_version ],
+  dependencies        : [ thread_dep, util_dep, lib_version, lib_commCtrl, tracy_dep ],
+  include_directories : [ bridge_include_path, util_include_path, public_include_path ],
+  vs_module_defs      : 'dxgi_lss.def')
 
 
 ext_x86_path = meson.global_source_root().replace('\\', '/') + '/ext/x86/'
@@ -116,4 +152,16 @@ custom_target('copy_d3d9_to_output',
     build_by_default : true,
     depends          : [ d3d9_dll ],
     command          : [copy_script_path, meson.current_build_dir(), output_dir, 'd3d9*'] )
+
+custom_target('copy_d3d11_to_output',
+  output           : ['copy_d3d11_to_output'],
+  build_by_default : true,
+  depends          : [ d3d11_dll ],
+  command          : [copy_script_path, meson.current_build_dir(), output_dir, 'd3d11*'] )
+
+custom_target('copy_dxgi_to_output',
+  output           : ['copy_dxgi_to_output'],
+  build_by_default : true,
+  depends          : [ dxgi_dll ],
+  command          : [copy_script_path, meson.current_build_dir(), output_dir, 'dxgi*'] )
 endif

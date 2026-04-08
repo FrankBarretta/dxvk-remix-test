@@ -253,6 +253,10 @@ public:
     return get().eliminateRedundantSetterCalls;
   }
 
+  static const std::string& getBridgeApi() {
+    return get().bridgeApi;
+  }
+
 private:
   GlobalOptions() = default;
 
@@ -427,6 +431,8 @@ private:
   
     exposeRemixApi = bridge_util::Config::getOption<bool>("exposeRemixApi", false);
 
+    bridgeApi = bridge_util::Config::getOption<std::string>("bridge.api", "d3d9");
+
     // If set, the bridge client will not send certain setter calls to the bridge server if the client knows the setter is writing
     // the the same value that is currently stored.
     eliminateRedundantSetterCalls = bridge_util::Config::getOption<bool>("eliminateRedundantSetterCalls", false);
@@ -481,5 +487,6 @@ private:
   uint32_t threadSafetyPolicy;
   bool alwaysCopyEntireStaticBuffer;
   bool exposeRemixApi;
+  std::string bridgeApi;
   bool eliminateRedundantSetterCalls;
 };

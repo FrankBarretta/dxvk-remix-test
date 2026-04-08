@@ -46,8 +46,7 @@ namespace bridge_util {
     static void deallocate(const AllocId id) {
       get().deallocate(id);
     }
-#endif
-#ifdef REMIX_BRIDGE_SERVER
+#elif defined(REMIX_BRIDGE_SERVER)
     static void allocate(const AllocId id, const ChunkId firstChunk) {
       get().allocate(id, firstChunk);
     }
@@ -71,8 +70,7 @@ namespace bridge_util {
 #ifdef REMIX_BRIDGE_CLIENT
       AllocId allocate(const size_t size);
       void deallocate(const AllocId id);
-#endif
-#ifdef REMIX_BRIDGE_SERVER
+#elif defined(REMIX_BRIDGE_SERVER)
       void allocate(const AllocId id, const ChunkId firstChunk);
       void deallocate(const AllocId id);
       void addNewHeapSegment(const uint32_t segmentSize);
@@ -108,7 +106,7 @@ namespace bridge_util {
       };
       static inline Allocation createAllocation(const ChunkId firstChunk,
                                                 const size_t numChunks) {
-        return { firstChunk, firstChunk + numChunks - 1 };
+        return { firstChunk, static_cast<ChunkId>(firstChunk + static_cast<ChunkId>(numChunks - 1)) };
       }
       Allocation findAllocation(const size_t numChunks);
       Allocation findFreeInMiddle(const size_t numChunks);

@@ -3247,6 +3247,19 @@ void CheckD3D9Type(HMODULE d3d9Module) {
 }
 
 bool InitializeD3D() {
+  const std::string& bridgeApi = GlobalOptions::getBridgeApi();
+
+  if (_stricmp(bridgeApi.c_str(), "d3d9") != 0) {
+    if (_stricmp(bridgeApi.c_str(), "d3d11") == 0) {
+      Logger::warn("bridge.api=d3d11 requested: starting server in bootstrap-only mode until the DX11 x86 bridge protocol is implemented.");
+      return true;
+    } else {
+      Logger::err(format_string("Unsupported bridge.api value: %s", bridgeApi.c_str()));
+    }
+
+    return false;
+  }
+
   // If vanilla dxvk is enabled attempt to load that first.
   if (ServerOptions::getUseVanillaDxvk()) {
     Logger::info("Loading standard Non-RTX DXVK d3d9 dll.");
@@ -3413,13 +3426,33 @@ static inline bool initFileSys() {
 
 int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ PWSTR pCmdLine, _In_ int nCmdShow) {
   gTimeStart = std::chrono::high_resolution_clock::now();
+
+  int argCount = 0;
+  LPWSTR* argList = CommandLineToArgvW(pCmdLine, &argCount);
+
+  std::wstring bridgeApiOverride;
+  if (argList != nullptr && argCount >= 4 && wcscmp(argList[2], L"-bridge-api") == 0) {
+    bridgeApiOverride = argList[3];
+  }
   
   if (!initFileSys()) {
     Logger::err("Failed to initialize rtx filesystem!");
+    if (argList != nullptr) {
+      LocalFree(argList);
+    }
     return 1;
   }
 
   Config::init(Config::App::Server);
+  if (!bridgeApiOverride.empty()) {
+    const int utf8Size = WideCharToMultiByte(CP_UTF8, 0, bridgeApiOverride.c_str(), -1, nullptr, 0, nullptr, nullptr);
+
+    if (utf8Size > 1) {
+      std::string bridgeApiUtf8(static_cast<size_t>(utf8Size - 1), '\0');
+      WideCharToMultiByte(CP_UTF8, 0, bridgeApiOverride.c_str(), -1, bridgeApiUtf8.data(), utf8Size, nullptr, nullptr);
+      Config::setOption("bridge.api", bridgeApiUtf8);
+    }
+  }
   GlobalOptions::init();
   Logger::init();
 
@@ -3435,8 +3468,6 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
   Logger::warn("Running in x86 mode! Are you sure this is what you want? RTX will not work this way, please run the 64-bit server instead!");
 #endif
 
-  int argCount;
-  LPWSTR* argList = CommandLineToArgvW(pCmdLine, &argCount);
   BRIDGE_ASSERT_LOG((argCount >= 2), "Command line argument count received to launch server is not as expected");
   if (gUniqueIdentifier.setGuid(&argList[0])) {
     Logger::info("Launched server with GUID " + gUniqueIdentifier.toString());
@@ -3486,8 +3517,8 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
 
   RegisterMessageChannel();
 
-  // (2) Load d3d9.dll, which could be original system, dxvk-remix, or something else...
-  Logger::info("Initializing D3D9...");
+  // (2) Load the graphics runtime that matches the configured bridge API.
+  Logger::info(format_string("Initializing bridge graphics API: %s", GlobalOptions::getBridgeApi().c_str()));
   if (!InitializeD3D()) {
     return 1;
   }

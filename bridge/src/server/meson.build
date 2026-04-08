@@ -33,6 +33,8 @@ server_header = files([
 ])
 
 thread_dep = dependency('threads')
+lib_dxgi = bridge_compiler.find_library('dxgi')
+lib_d3d11 = bridge_compiler.find_library('d3d11')
 
 server_tag = vcs_tag(
   command: [python_interpreter.full_path(), global_src_root_norm + './scripts-common/echo.py', full_version],
@@ -49,7 +51,7 @@ server_resource = windows.compile_resources('NvRemixBridge.rc',
 server_exe = executable('NvRemixBridge', server_src, server_header, server_version, server_resource,
 sources             : [ bridge_version ],
 build_by_default    : (cpu_family == 'x86_64') ? true : false,
-dependencies        : [ thread_dep, util_dep, lib_version, tracy_dep ],
+dependencies        : [ thread_dep, util_dep, lib_version, lib_dxgi, lib_d3d11, tracy_dep ],
 include_directories : [ bridge_include_path, util_include_path, public_include_path ],
 win_subsystem       : 'windows')
 
