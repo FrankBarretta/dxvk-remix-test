@@ -136,6 +136,10 @@ namespace dxvk {
       return m_isD3D11Remix && m_d3d11InjectRtxStageLimit > 0u;
     }
 
+    void setD3D11HasFreshSceneDataForNextInject(bool hasFreshSceneData) {
+      m_d3d11HasFreshSceneDataForNextInject = hasFreshSceneData;
+    }
+
     void getDenoiseArgs(NrdArgs& outPrimaryDirectNrdArgs, NrdArgs& outPrimaryIndirectNrdArgs, NrdArgs& outSecondaryNrdArgs);
     void updateRaytraceArgsConstantBuffer(Resources::RaytracingOutput& rtOutput, const VkExtent3D& downscaledExtent, const VkExtent3D& targetExtent);
 
@@ -269,6 +273,8 @@ namespace dxvk {
     uint32_t m_screenshotFrameNum = -1;
     uint32_t m_terminateAppFrameNum = -1;
     bool m_previousInjectRtxHadScene = false;
+    bool m_d3d11HasFreshSceneDataForNextInject = true;
+    bool m_loggedD3D11SceneReuseWarning = false;
     IntegrateIndirectMode m_prevIntegrateIndirectMode = IntegrateIndirectMode::Count;
 
     DxvkRaytracingInstanceState m_rtState;

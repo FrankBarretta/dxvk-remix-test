@@ -15,16 +15,18 @@ namespace dxvk {
     this->remixPilotPostProbeCaptureInterval = config.getOption<int32_t>("d3d11.remixPilotPostProbeCaptureInterval", 10);
     this->remixPilotMaxCapturesPerFrame = config.getOption<int32_t>("d3d11.remixPilotMaxCapturesPerFrame", 64);
     this->remixPilotProbeMaxCapturesPerFrame = config.getOption<int32_t>("d3d11.remixPilotProbeMaxCapturesPerFrame", 1);
-    this->remixPilotPostProbeMaxCapturesPerFrame = config.getOption<int32_t>("d3d11.remixPilotPostProbeMaxCapturesPerFrame", 4);
+    // NV-DXVK start: Default DX11 Remix to the validated auxiliary post-probe path
+    this->remixPilotPostProbeMaxCapturesPerFrame = config.getOption<int32_t>("d3d11.remixPilotPostProbeMaxCapturesPerFrame", enableRemix ? 1 : 4);
     this->remixPilotMaxSuccessfulCaptures = config.getOption<int32_t>("d3d11.remixPilotMaxSuccessfulCaptures", 0);
     this->remixPilotEnableSceneCaptureEndFrame = config.getOption<bool>("d3d11.remixPilotEnableSceneCaptureEndFrame", false);
     this->remixPilotEnableResetScreenResolution = config.getOption<bool>("d3d11.remixPilotEnableResetScreenResolution", false);
     this->remixPilotEnableOnPresent = config.getOption<bool>("d3d11.remixPilotEnableOnPresent", false);
-    this->remixPilotEnableFullEndFrame = config.getOption<bool>("d3d11.remixPilotEnableFullEndFrame", false);
-    this->remixPilotEnableFullEndFrameAfterProbe = config.getOption<bool>("d3d11.remixPilotEnableFullEndFrameAfterProbe", false);
-    this->remixPilotEnableInjectRtx = config.getOption<bool>("d3d11.remixPilotEnableInjectRtx", false);
-    this->remixPilotEnableInjectRtxAfterProbe = config.getOption<bool>("d3d11.remixPilotEnableInjectRtxAfterProbe", false);
-    this->remixPilotInjectRtxStageLimit = config.getOption<int32_t>("d3d11.remixPilotInjectRtxStageLimit", 0);
+    this->remixPilotEnableFullEndFrame = config.getOption<bool>("d3d11.remixPilotEnableFullEndFrame", enableRemix);
+    this->remixPilotEnableFullEndFrameAfterProbe = config.getOption<bool>("d3d11.remixPilotEnableFullEndFrameAfterProbe", enableRemix);
+    this->remixPilotEnableInjectRtx = config.getOption<bool>("d3d11.remixPilotEnableInjectRtx", enableRemix);
+    this->remixPilotEnableInjectRtxAfterProbe = config.getOption<bool>("d3d11.remixPilotEnableInjectRtxAfterProbe", enableRemix);
+    this->remixPilotInjectRtxStageLimit = config.getOption<int32_t>("d3d11.remixPilotInjectRtxStageLimit", enableRemix ? 15 : 0);
+    // NV-DXVK end
     this->dcSingleUseMode       = config.getOption<bool>("d3d11.dcSingleUseMode", true);
     this->enableRtOutputNanFixup   = config.getOption<bool>("d3d11.enableRtOutputNanFixup", false);
     this->zeroInitWorkgroupMemory  = config.getOption<bool>("d3d11.zeroInitWorkgroupMemory", false);

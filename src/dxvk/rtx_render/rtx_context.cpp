@@ -662,11 +662,25 @@ namespace dxvk {
       traceInjectStage("after reflex-state");
       logInjectProbeStep("after reflex-state");
 
+      const bool canReuseD3D11PreparedScene = m_isD3D11Remix
+        && !m_d3d11HasFreshSceneDataForNextInject
+        && getSceneManager().getSurfaceBuffer() != nullptr;
+
       // Update all the GPU buffers needed to describe the scene
-      logInjectProbeStep("before prepare-scene-data");
-      getSceneManager().prepareSceneData(this, m_execBarriers);
-      traceInjectStage("after prepare-scene-data");
-      logInjectProbeStep("after prepare-scene-data");
+      if (canReuseD3D11PreparedScene) {
+        traceInjectStage("reusing-prepared-scene");
+
+        if (!m_loggedD3D11SceneReuseWarning) {
+          m_loggedD3D11SceneReuseWarning = true;
+          Logger::warn("D3D11: RtxContext::injectRTX is reusing the previously prepared Remix scene because the current DX11 frame did not contribute new pilot geometry.");
+        }
+      } else {
+        logInjectProbeStep("before prepare-scene-data");
+        getSceneManager().prepareSceneData(this, m_execBarriers);
+        traceInjectStage("after prepare-scene-data");
+        logInjectProbeStep("after prepare-scene-data");
+      }
+
       if (stopAfterStage(6u, "after prepare-scene-data"))
         goto inject_probe_fallback;
       
@@ -945,6 +959,7 @@ namespace dxvk {
     traceInjectStage("after update-metrics");
     logInjectProbeStep("after update-metrics");
 
+    m_d3d11HasFreshSceneDataForNextInject = true;
     m_resetHistory = false;
     traceInjectStage("complete");
     logInjectProbeStep("complete");

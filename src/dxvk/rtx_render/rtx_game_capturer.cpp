@@ -159,6 +159,8 @@ namespace dxvk {
       if(isIdle()) {
         if (RtxOptions::getEnableAnyReplacements() && m_sceneManager.areAllReplacementsLoaded()) {
           Logger::warn("[GameCapturer] Cannot begin capture when replacement assets are enabled/loaded.");
+        } else if (m_pDevice->instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
+          Logger::warn("[GameCapturer] Capture Scene is temporarily disabled on the experimental DX11 Remix path because starting a USD capture currently destabilizes the auxiliary pipeline.");
         } else if (m_state.has<State::Capturing>()) {
           Logger::warn("[GameCapturer] Cannot begin new capture, one currently in progress.");
         } else {

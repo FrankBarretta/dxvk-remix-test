@@ -449,6 +449,23 @@ namespace dxvk {
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms();
     const bool auxiliaryInjectRtxProbeCompleted = m_parent->RTX().HasCompletedAuxiliaryInjectRtxProbe();
+    const bool isAuxiliaryRemixPath = m_parent->GetOptions()->enableRemix
+      && !m_parent->UsesImmediateContextRtx()
+      && m_parent->RTX().CanUseRtxExecutionContext()
+      && m_parent->RTX().HasSeenRequiredTransforms();
+    const bool auxiliaryUiRefreshRequested = isAuxiliaryRemixPath
+      && auxiliaryInjectRtxProbeCompleted
+      && RtxOptions::showUI() != UIType::None;
+    const bool auxiliaryOptionRefreshRequested = isAuxiliaryRemixPath
+      && auxiliaryInjectRtxProbeCompleted
+      && RtxOptionManager::hasPendingChanges();
+
+    // NV-DXVK start: Flush UI-driven option changes before the auxiliary post-probe refresh frame
+    if (auxiliaryOptionRefreshRequested) {
+      RtxOptionManager::applyPendingValuesOptionLayers();
+      RtxOptionManager::applyPendingValues(m_device.ptr());
+    }
+    // NV-DXVK end
 
     const bool useAuxiliarySceneCaptureEndFrame = m_parent->GetOptions()->enableRemix
       && !m_parent->UsesImmediateContextRtx()
@@ -464,10 +481,10 @@ namespace dxvk {
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms()
       && auxiliaryInjectRtxProbeCompleted
-      && m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame();
+      && (m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame() || auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested);
     const bool useAuxiliaryInjectRtxAfterProbe = useAuxiliaryFullEndFrameAfterProbe
       && m_parent->GetOptions()->remixPilotEnableInjectRtxAfterProbe
-      && m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame();
+      && (m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame() || auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested);
 
     const bool useAuxiliaryResetScreenResolution = (useAuxiliarySceneCaptureEndFrame || useAuxiliaryFullEndFrameAfterProbe)
       && m_parent->GetOptions()->remixPilotEnableResetScreenResolution;

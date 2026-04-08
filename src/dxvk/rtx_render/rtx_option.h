@@ -615,6 +615,30 @@ namespace dxvk {
       lock.unlock();
     }
 
+    static bool hasPendingChanges() {
+      if (!RtxOptionImpl::getDirtyRtxOptionMap().empty()) {
+        return true;
+      }
+
+      for (const auto& [layerKey, optionLayerPtr] : RtxOptionImpl::getRtxOptionLayerMap()) {
+        const RtxOptionLayer& optionLayer = *optionLayerPtr;
+
+        if (optionLayer.getPendingEnabled() != optionLayer.isEnabled()) {
+          return true;
+        }
+
+        if (optionLayer.getPendingBlendStrength() != optionLayer.getBlendStrength()) {
+          return true;
+        }
+
+        if (optionLayer.getPendingBlendThreshold() != optionLayer.getBlendStrengthThreshold()) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     // This will apply all of the RtxOption::set() calls that have been made since the last time it was called.
     // This should be called at the very end of the frame in the dxvk-cs thread.
     // Before the first frame is rendered, it also needs to be called at least once during initialization.
