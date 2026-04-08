@@ -591,9 +591,16 @@ namespace dxvk {
     volumeArgs.scatteringCoefficient = volumetricScatteringCoefficient;
     volumeArgs.enableVolumeRISInitialVisibility = enableInitialVisibility();
     volumeArgs.enablevisibilityReuse = visibilityReuse();
+
+    const uint32_t currentFrameId = m_device->getCurrentFrameId();
+    const bool allowStaleMainCameraForD3D11Remix = m_device->instance()->config().getOption<bool>("d3d11.enableRemix", false)
+      && currentFrameId > 0u
+      && !mainCamera.isValid(currentFrameId)
+      && mainCamera.isValid(currentFrameId - 1u);
+
     // Note: We need to invalidate the volumetric reservoir when detecting camera cut to avoid accumulating the history from different scenes
-    volumeArgs.enableVolumeTemporalResampling = enableTemporalResampling() && !cameraManager.getMainCamera().isCameraCut();
-    volumeArgs.enableVolumeSpatialResampling = enableSpatialResampling() && !cameraManager.getMainCamera().isCameraCut();
+    volumeArgs.enableVolumeTemporalResampling = enableTemporalResampling() && !cameraManager.getMainCamera().isCameraCut() && !allowStaleMainCameraForD3D11Remix;
+    volumeArgs.enableVolumeSpatialResampling = enableSpatialResampling() && !cameraManager.getMainCamera().isCameraCut() && !allowStaleMainCameraForD3D11Remix;
     volumeArgs.numSpatialSamples = spatialReuseMaxSampleCount();
     volumeArgs.spatialSamplingRadius = spatialReuseSamplingRadius();
     volumeArgs.numFroxelVolumes = m_numFroxelVolumes;     
@@ -655,7 +662,7 @@ namespace dxvk {
 
     // Note: Camera should always be valid at this point as we rely on data from it, additionally this is checked
     // before ray tracing is even done.
-    assert(mainCamera.isValid(m_device->getCurrentFrameId()));
+    assert(mainCamera.isValid(currentFrameId) || allowStaleMainCameraForD3D11Remix);
 
     const float cameraFrustumMaxDistance = mainCamera.getFarPlane() - mainCamera.getNearPlane();
 
@@ -664,7 +671,7 @@ namespace dxvk {
     }
 
     // Note: We need to invalidate the volumetric history buffers (radiance and age buffers) when detecting camera cut to avoid accumulating the history from different scenes
-    volumeArgs.resetHistory = cameraManager.getMainCamera().isCameraCut();
+    volumeArgs.resetHistory = cameraManager.getMainCamera().isCameraCut() || allowStaleMainCameraForD3D11Remix;
 
     return volumeArgs;
   }

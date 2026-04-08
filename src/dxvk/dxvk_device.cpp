@@ -400,7 +400,8 @@ namespace dxvk {
     bool                            insertReflexPresentMarkers,
     std::uint32_t                   cachedAcquiredImageIndex,
     const Rc<vk::Presenter>&        presenter,
-          DxvkSubmitStatus*         status
+          DxvkSubmitStatus*         status,
+    bool                            incrementFrameCounter
           ) {
     ScopedCpuProfileZone();
     
@@ -416,7 +417,9 @@ namespace dxvk {
 
     m_submissionQueue.present(presentInfo, status);
 
-    incrementPresentCount();
+    if (incrementFrameCounter) {
+      incrementPresentCount();
+    }
 
     // NV-DXVK end
 

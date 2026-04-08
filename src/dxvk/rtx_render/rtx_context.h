@@ -275,6 +275,7 @@ namespace dxvk {
     bool m_previousInjectRtxHadScene = false;
     bool m_d3d11HasFreshSceneDataForNextInject = true;
     bool m_loggedD3D11SceneReuseWarning = false;
+    bool m_loggedD3D11StaleCameraReuseWarning = false;
     IntegrateIndirectMode m_prevIntegrateIndirectMode = IntegrateIndirectMode::Count;
 
     DxvkRaytracingInstanceState m_rtState;

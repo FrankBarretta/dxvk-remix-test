@@ -194,6 +194,8 @@ public:
   // ISceneManager but not really
   void clear(Rc<DxvkContext> ctx, bool needWfi);
   void garbageCollection();
+  bool reuseLastValidMainCameraForCurrentFrame();
+  void prepareBindlessResourceData(Rc<RtxContext> ctx);
   void prepareSceneData(Rc<RtxContext> ctx, class DxvkBarrierSet& execBarriers);
 
   void onFrameEnd(Rc<DxvkContext> ctx);

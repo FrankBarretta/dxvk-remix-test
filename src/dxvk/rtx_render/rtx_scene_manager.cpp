@@ -1510,6 +1510,26 @@ namespace dxvk {
     }
   }
 
+  void SceneManager::prepareBindlessResourceData(Rc<RtxContext> ctx) {
+    auto& textureManager = m_device->getCommon()->getTextureManager();
+    m_bindlessResourceManager.prepareSceneData(ctx, textureManager.getTextureTable(), getBufferTable(), getSamplerTable());
+  }
+
+  bool SceneManager::reuseLastValidMainCameraForCurrentFrame() {
+    const uint32_t currentFrameId = m_device->getCurrentFrameId();
+    const RtCamera& camera = getCamera();
+
+    if (camera.isValid(currentFrameId) || camera.getLastUpdateFrame() == kInvalidFrameIndex) {
+      return false;
+    }
+
+    m_cameraManager.processExternalCamera(
+      CameraType::Main,
+      Matrix4(camera.getWorldToView()),
+      Matrix4(camera.getViewToProjection()));
+    return true;
+  }
+
   void SceneManager::prepareSceneData(Rc<RtxContext> ctx, DxvkBarrierSet& execBarriers) {
     ScopedGpuProfileZone(ctx, "Build Scene");
 
@@ -1554,7 +1574,7 @@ namespace dxvk {
     logPrepareSceneDataStage("after terrain-baker");
 
     auto& textureManager = m_device->getCommon()->getTextureManager();
-    m_bindlessResourceManager.prepareSceneData(ctx, textureManager.getTextureTable(), getBufferTable(), getSamplerTable());
+    prepareBindlessResourceData(ctx);
     tracePrepareSceneDataStage("after bindless-resource-prepare");
     logPrepareSceneDataStage("after bindless-resource-prepare");
 
@@ -1582,7 +1602,14 @@ namespace dxvk {
       // Ignore camera cut events on teleportation so we don't flush the caches
       if (!didTeleport) {
         Logger::info(str::format("Camera cut detected on frame ", m_device->getCurrentFrameId()));
-        m_enqueueDelayedClear = true;
+
+        if (ctx != nullptr && ctx->isD3D11RemixEnabled()) {
+          if (ctx->isD3D11InjectProbeActive()) {
+            Logger::warn("D3D11: SceneManager::prepareSceneData suppressing camera-cut delayed clear on the experimental D3D11 Remix path.");
+          }
+        } else {
+          m_enqueueDelayedClear = true;
+        }
       }
     }
     tracePrepareSceneDataStage("after camera-history-fixups");

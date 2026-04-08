@@ -501,7 +501,8 @@ namespace dxvk {
       bool                            insertReflexPresentMarkers,
       std::uint32_t                   cachedAcquiredImageIndex,
       const Rc<vk::Presenter>&        presenter,
-            DxvkSubmitStatus*         status
+            DxvkSubmitStatus*         status,
+      bool                            incrementFrameCounter = true
             );
 
     void incrementPresentCount();

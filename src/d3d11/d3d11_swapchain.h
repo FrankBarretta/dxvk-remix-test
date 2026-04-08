@@ -129,7 +129,8 @@ namespace dxvk {
       const vk::PresenterSync&      Sync,
                     uint32_t                FrameId,
                     uint32_t                ImageIndex,
-                    bool                    useRemixPresentPath);
+                          bool                    useRemixPresentPath,
+                          bool                    incrementPresentCount);
 
     void SynchronizePresent();
 

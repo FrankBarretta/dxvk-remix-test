@@ -545,13 +545,40 @@ namespace dxvk {
     traceInjectStage("after already-injected check");
     logInjectProbeStep("after already-injected check");
 
+    if (m_isD3D11Remix && RtxOptionManager::hasPendingChanges()) {
+      logInjectProbeStep("before pre-render apply-pending-options");
+      RtxOptionManager::applyPendingValuesOptionLayers();
+      RtxOptionManager::applyPendingValues(m_device.ptr());
+      logInjectProbeStep("after pre-render apply-pending-options");
+    }
+
+    const uint32_t currentFrameId = m_device->getCurrentFrameId();
+    const bool canReuseD3D11PreparedScene = m_isD3D11Remix
+      && !m_d3d11HasFreshSceneDataForNextInject
+      && getSceneManager().getSurfaceBuffer() != nullptr;
+
     logInjectProbeStep("before camera-validity check");
-    const bool isCameraValid = getSceneManager().getCamera().isValid(m_device->getCurrentFrameId());
-    if (!isCameraValid) {
+    bool reusedD3D11StaleCamera = false;
+    bool isCameraValid = getSceneManager().getCamera().isValid(currentFrameId);
+
+    if (!isCameraValid && canReuseD3D11PreparedScene) {
+      reusedD3D11StaleCamera = getSceneManager().reuseLastValidMainCameraForCurrentFrame();
+      isCameraValid = getSceneManager().getCamera().isValid(currentFrameId);
+    }
+
+    if (!isCameraValid && reusedD3D11StaleCamera) {
+      isCameraValid = true;
+      m_resetHistory = true;
+
+      if (!m_loggedD3D11StaleCameraReuseWarning) {
+        m_loggedD3D11StaleCameraReuseWarning = true;
+        Logger::warn("D3D11: RtxContext::injectRTX is reusing the last valid camera on a no-fresh-geometry DX11 frame so the prepared Remix scene remains visible while menu changes are applied.");
+      }
+    } else if (!isCameraValid) {
       ONCE(Logger::info(str::format("[RTX-Compatibility-Info] Trying to raytrace but not detecting a valid camera.")));
     }
-    traceInjectStage(isCameraValid ? "camera-valid" : "camera-invalid");
-    logInjectProbeStep(isCameraValid ? "camera-valid" : "camera-invalid");
+    traceInjectStage(isCameraValid ? (reusedD3D11StaleCamera ? "camera-stale-reused" : "camera-valid") : "camera-invalid");
+    logInjectProbeStep(isCameraValid ? (reusedD3D11StaleCamera ? "camera-stale-reused" : "camera-valid") : "camera-invalid");
 
     // Update frame counter only after actual rendering
     if (isCameraValid) {
@@ -662,10 +689,6 @@ namespace dxvk {
       traceInjectStage("after reflex-state");
       logInjectProbeStep("after reflex-state");
 
-      const bool canReuseD3D11PreparedScene = m_isD3D11Remix
-        && !m_d3d11HasFreshSceneDataForNextInject
-        && getSceneManager().getSurfaceBuffer() != nullptr;
-
       // Update all the GPU buffers needed to describe the scene
       if (canReuseD3D11PreparedScene) {
         traceInjectStage("reusing-prepared-scene");
@@ -674,6 +697,8 @@ namespace dxvk {
           m_loggedD3D11SceneReuseWarning = true;
           Logger::warn("D3D11: RtxContext::injectRTX is reusing the previously prepared Remix scene because the current DX11 frame did not contribute new pilot geometry.");
         }
+
+        getSceneManager().prepareBindlessResourceData(this);
       } else {
         logInjectProbeStep("before prepare-scene-data");
         getSceneManager().prepareSceneData(this, m_execBarriers);
@@ -1665,6 +1690,12 @@ namespace dxvk {
 
   void RtxContext::checkNeuralRadianceCacheSupport() {
     // Update RtxOption selection if Neural Radiance Cache was selected but it's not supported
+    if (RtxOptions::integrateIndirectMode() == IntegrateIndirectMode::NeuralRadianceCache && m_isD3D11Remix) {
+      Logger::warn(str::format("[RTX] Neural Radiance Cache is disabled on the experimental D3D11 Remix path. Switching indirect illumination mode to ReSTIR GI."));
+      RtxOptions::integrateIndirectMode.setImmediately(IntegrateIndirectMode::ReSTIRGI);
+      return;
+    }
+
     if (RtxOptions::integrateIndirectMode() == IntegrateIndirectMode::NeuralRadianceCache &&
         !NeuralRadianceCache::checkIsSupported(m_device.ptr())) {
 

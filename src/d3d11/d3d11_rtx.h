@@ -60,9 +60,17 @@ namespace dxvk {
       return m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) != 0u;
     }
 
+    bool HasPendingDrawsThisFrame() const {
+      return m_pendingDrawCalls != 0u;
+    }
+
     bool HasCompletedAuxiliaryInjectRtxProbe() const {
       return m_auxiliaryInjectRtxProbeCompleted.load(std::memory_order_relaxed);
     }
+
+    bool WasUiOptionRefreshRequestedRecently() const;
+
+    void NotifyUiOptionRefreshRequested();
 
     void NotifyDraw(const DrawContext& drawContext);
 
@@ -148,6 +156,7 @@ namespace dxvk {
     std::atomic<uint32_t> m_auxiliaryPilotCapturesThisFrame = 0;
     std::atomic<uint32_t> m_auxiliaryPilotSuccessfulCaptures = 0;
     std::atomic<uint32_t> m_geometryCaptureFaultCount = 0;
+    std::atomic<uint64_t> m_lastAuxiliaryUiOptionRefreshFrame = UINT64_MAX;
     uint64_t m_reflexFrameId = 0;
     uint64_t m_lastAuxiliaryPilotCaptureFrame = UINT64_MAX;
     uint64_t m_lastAuxiliaryInjectRtxCaptureFrame = UINT64_MAX;
