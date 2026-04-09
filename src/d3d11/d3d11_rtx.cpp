@@ -1267,6 +1267,32 @@ namespace dxvk {
     }
 
     drawCallState.setupCategoriesForTexture();
+    const XXH64_hash_t colorTextureHash = drawCallState.materialData.getColorTexture().getImageHash();
+
+    if (!m_parent->UsesImmediateContextRtx() && auxiliaryCaptureSceneRequestedOrActive) {
+      const uint32_t captureOrdinalThisFrame = m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed);
+      if (captureOrdinalThisFrame < 12u) {
+        Logger::warn(str::format(
+          "D3D11: Capture Scene candidate drawCallID=", drawCallState.drawCallID,
+          ", indexed=", resolvedDrawContext.indexed ? 1u : 0u,
+          ", vertexCount=", resolvedDrawContext.vertexCount,
+          ", indexCount=", resolvedDrawContext.indexCount,
+          ", instanceCount=", resolvedDrawContext.instanceCount,
+          ", minZ=", drawCallState.minZ,
+          ", maxZ=", drawCallState.maxZ,
+          ", zEnable=", drawCallState.zEnable ? 1u : 0u,
+          ", zWrite=", drawCallState.zWriteEnable ? 1u : 0u,
+          ", textureHash=0x", std::hex, colorTextureHash, std::dec,
+          ", categories=0x", std::hex, drawCallState.getCategoryFlags().raw(), std::dec,
+          " [WorldUI=", drawCallState.testCategoryFlags(InstanceCategories::WorldUI) ? 1u : 0u,
+          ", WorldMatte=", drawCallState.testCategoryFlags(InstanceCategories::WorldMatte) ? 1u : 0u,
+          ", Particle=", drawCallState.testCategoryFlags(InstanceCategories::Particle) ? 1u : 0u,
+          ", Sky=", drawCallState.testCategoryFlags(InstanceCategories::Sky) ? 1u : 0u,
+          ", Terrain=", drawCallState.testCategoryFlags(InstanceCategories::Terrain) ? 1u : 0u,
+          ", Ignore=", drawCallState.testCategoryFlags(InstanceCategories::Ignore) ? 1u : 0u,
+          "]."));
+      }
+    }
 
     DrawParameters params;
     params.vertexCount = resolvedDrawContext.vertexCount;

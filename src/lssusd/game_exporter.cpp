@@ -882,6 +882,10 @@ void GameExporter::exportInstances(const Export& exportData, ExportContext& ctx)
     transformOp.Set(xform);
   }
   for(const auto& [instId,instanceData] : exportData.instances) {
+    dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId,
+      "][exportInstances] Exporting instance ", instId, " at ",
+      instanceData.instanceName, "."));
+
     // Build base Xform prim for instance to reside in
     auto instanceName = (instanceData.isSky ? "sky_" : "inst_") + std::string(instanceData.instanceName);
     pxr::SdfPath instancePath = gRootInstancesPath.AppendElementString(instanceName);
@@ -893,7 +897,15 @@ void GameExporter::exportInstances(const Export& exportData, ExportContext& ctx)
     } else {
       instanceXformSchema = pxr::UsdGeomXform::Define(ctx.instanceStage, instancePath);
     }
-    assert(instanceXformSchema);
+    if (!instanceXformSchema) {
+      dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+        "][exportInstances] Skipping instance ", instId,
+        " because the instance prim could not be defined at ",
+        instancePath.GetString(), "."));
+      continue;
+    }
+    dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId,
+      "][exportInstances] Instance prim defined for ", instId, "."));
 
     // Attach reference to mesh in question
     if (ctx.meshReferences.count(instanceData.meshId) == 0) {
@@ -905,10 +917,17 @@ void GameExporter::exportInstances(const Export& exportData, ExportContext& ctx)
     const Reference& meshLssReference = ctx.meshReferences[instanceData.meshId];
     auto instanceUsdReferences = instanceXformSchema.GetPrim().GetReferences();
     instanceUsdReferences.AddInternalReference(meshLssReference.instanceSdfPath);
-    
+    dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId,
+      "][exportInstances] Added mesh reference for instance ", instId, "."));
+
     // Set instanced mesh to now be visible
     auto visibilityAttr = instanceXformSchema.CreateVisibilityAttr();
-    assert(visibilityAttr);
+    if (!visibilityAttr) {
+      dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+        "][exportInstances] Skipping instance ", instId,
+        " because visibility could not be authored."));
+      continue;
+    }
     visibilityAttr.Set(gVisibilityInherited);
     
     // Hide the original sky mesh(s) since it may block the sky dome light and other lights
@@ -924,10 +943,18 @@ void GameExporter::exportInstances(const Export& exportData, ExportContext& ctx)
           "][exportInstances] Instance ", instId, " references missing material ",
           instanceData.matId, "; skipping material binding."));
       } else {
-      const Reference& matLssReference = ctx.matReferences[instanceData.matId];
-      const auto shaderMatSchema = pxr::UsdShadeMaterial::Get(ctx.instanceStage, matLssReference.instanceSdfPath);
-      assert(shaderMatSchema);
-      pxr::UsdShadeMaterialBindingAPI(instanceXformSchema.GetPrim()).Bind(shaderMatSchema);
+        const Reference& matLssReference = ctx.matReferences[instanceData.matId];
+        const auto shaderMatSchema = pxr::UsdShadeMaterial::Get(ctx.instanceStage, matLssReference.instanceSdfPath);
+        if (!shaderMatSchema) {
+          dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+            "][exportInstances] Instance ", instId, " references material ",
+            instanceData.matId, " but the material prim is invalid at ",
+            matLssReference.instanceSdfPath.GetString(), "."));
+        } else {
+          pxr::UsdShadeMaterialBindingAPI(instanceXformSchema.GetPrim()).Bind(shaderMatSchema);
+          dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId,
+            "][exportInstances] Bound material for instance ", instId, "."));
+        }
       }
     }
 
@@ -955,6 +982,13 @@ void GameExporter::exportInstances(const Export& exportData, ExportContext& ctx)
     } else {
       const auto meshSchemaSdfPath = instancePath.AppendChild(gTokMesh);
       pxr::UsdGeomMesh meshSchema = pxr::UsdGeomMesh::Define(ctx.instanceStage, meshSchemaSdfPath);
+      if (!meshSchema) {
+        dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+          "][exportInstances] Skipping instance ", instId,
+          " because the mesh prim could not be defined at ",
+          meshSchemaSdfPath.GetString(), "."));
+        continue;
+      }
       pxr::UsdGeomPrimvarsAPI primvarsAPI(meshSchema.GetPrim());
 
 #define _SetDrawMetadata(name, type)  primvarsAPI.CreatePrimvar(pxr::TfToken("_remix_metadata:" #name), pxr::SdfValueTypeNames->##type).Set(pxr::VtValue(instanceData.metadata.##name))
@@ -981,10 +1015,23 @@ void GameExporter::exportInstances(const Export& exportData, ExportContext& ctx)
 #undef _SetDrawMetadata
     }
 
+    if (instanceData.xforms.empty()) {
+      dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+        "][exportInstances] Skipping xform export for instance ", instId,
+        " because it has no sampled transforms."));
+      continue;
+    }
+
+    dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId,
+      "][exportInstances] Authoring transforms for instance ", instId, "."));
     setTimeSampledXforms(ctx.instanceStage, instancePath,
                          instanceData.firstTime, instanceData.finalTime, instanceData.xforms,
                          exportData.meta, false);
+    dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId,
+      "][exportInstances] Authored transforms for instance ", instId, "."));
     setVisibilityTimeSpan(ctx.instanceStage, instancePath, instanceData.firstTime, instanceData.finalTime, exportData.meta.numFramesCaptured);
+    dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId,
+      "][exportInstances] Finished instance ", instId, "."));
   }
   dxvk::Logger::debug("[GameExporter][" + exportData.debugId + "][exportInstances] End");
 }
@@ -1267,10 +1314,35 @@ void GameExporter::setTimeSampledXforms(const pxr::UsdStageRefPtr stage,
   const bool isSingleFrame = meta.numFramesCaptured == 1;
 
   auto geomXformable = pxr::UsdGeomXformable::Get(stage, sdfPath);
+  if (!geomXformable) {
+    dxvk::Logger::warn(dxvk::str::format("[GameExporter] Skipping xform export for ",
+      sdfPath.GetString(), " because the prim is not xformable."));
+    return;
+  }
+
+  if (!MatrixIsFinite(commonXform)) {
+    dxvk::Logger::warn(dxvk::str::format("[GameExporter] Skipping xform export for ",
+      sdfPath.GetString(), " because the common transform matrix contains non-finite values."));
+    return;
+  }
+
+  auto xformOp = geomXformable.MakeMatrixXform();
+  if (!xformOp) {
+    dxvk::Logger::warn(dxvk::str::format("[GameExporter] Skipping xform export for ",
+      sdfPath.GetString(), " because the matrix transform op could not be created."));
+    return;
+  }
+
   for(const auto& sampledXform : xforms) {
     if (!std::isfinite(sampledXform.time)) {
       dxvk::Logger::warn(dxvk::str::format("[GameExporter] Skipping an invalid xform sample for ",
         sdfPath.GetString(), " because the time code is not finite."));
+      continue;
+    }
+
+    if (!MatrixIsFinite(sampledXform.xform)) {
+      dxvk::Logger::warn(dxvk::str::format("[GameExporter] Skipping an invalid xform sample for ",
+        sdfPath.GetString(), " because the transform matrix contains non-finite values."));
       continue;
     }
     const pxr::UsdTimeCode timeCode = isSingleFrame ? pxr::UsdTimeCode::Default() : pxr::UsdTimeCode(sampledXform.time);
@@ -1280,7 +1352,6 @@ void GameExporter::setTimeSampledXforms(const pxr::UsdStageRefPtr stage,
 
     xform = changeBasis ? dxvk::swapBasis(xform) : xform;
 
-    auto xformOp = geomXformable.AddTransformOp();
     xformOp.Set(xform, timeCode);
   }
 }
