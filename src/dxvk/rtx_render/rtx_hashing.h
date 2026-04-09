@@ -138,6 +138,10 @@ namespace dxvk {
         const HashComponents component = (HashComponents) i;
 
         if (rule.test(component)) {
+          if (fields[i] == kEmptyHash) {
+            continue;
+          }
+
           if (hashResult == kEmptyHash)
             // For the first entry, we use the hash directly
             hashResult = fields[i];
@@ -146,7 +150,6 @@ namespace dxvk {
             hashResult = XXH64(&(fields[i]), sizeof(XXH64_hash_t), hashResult);
         }
       }
-      assert(hashResult != kEmptyHash);
       return hashResult;
     }
 

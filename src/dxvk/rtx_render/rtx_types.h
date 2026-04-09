@@ -570,7 +570,16 @@ struct DrawCallState {
     }
 
     remixDebugCommitStage = 169;
-    assert(geometryHash != kEmptyHash);
+    if (geometryHash == kEmptyHash) {
+      const XXH64_hash_t legacyGeometryHash = geometryData.getHashForRuleLegacy(rule);
+      if (legacyGeometryHash != kEmptyHash) {
+        Logger::warn(str::format("[GameCapturer] Falling back to legacy geometry hash because the primary geometry hash is empty."));
+        geometryHash = legacyGeometryHash;
+      } else {
+        Logger::warn(str::format("[GameCapturer] Falling back to the material hash because both primary and legacy geometry hashes are empty."));
+        geometryHash = materialData.getHash();
+      }
+    }
     remixDebugCommitStage = 145;
     const XXH64_hash_t materialHash = materialData.getHash();
     remixDebugCommitStage = 146;
@@ -808,7 +817,8 @@ struct BlasEntry {
     if (iter != m_materials.end()) {
       return iter->second;
     }
-    assert(false); // tried to get a material that the BlasEntry doesn't know about.
+    Logger::warn(str::format("[GameCapturer] Falling back to the BLAS input material because the material cache does not contain hash ",
+      dxvk::hashToString(matHash), "."));
     return input.getMaterialData();
   }
 

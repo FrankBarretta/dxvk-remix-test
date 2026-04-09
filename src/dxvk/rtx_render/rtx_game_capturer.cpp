@@ -263,6 +263,8 @@ namespace dxvk {
     captureFrame(ctx);
 
     if (m_pCap->numFramesCaptured >= m_options.numFrames) {
+      Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "] Flushing command list before USD export prep."));
+      ctx->flushCommandList();
       m_state.set<State::BeginExport, true>();
       m_state.set<State::Capturing, false>();
     }
@@ -285,10 +287,6 @@ namespace dxvk {
           Logger::info("[GameCapturer][" + m_pCap->idStr + "] Camera captured");
           captureLights();
           Logger::info("[GameCapturer][" + m_pCap->idStr + "] Lights captured");
-          if (isD3D11Remix) {
-            Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "] DX11 Capture Scene is temporarily exporting asset-only data after camera/lights to avoid the current instance export crash."));
-            m_pCap->bCaptureInstances = false;
-          }
         }
       }
     }
@@ -550,18 +548,35 @@ namespace dxvk {
       Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Skipping new instance because the BLAS is null."));
       return;
     }
+    const bool isD3D11Remix = ctx->getDevice()->instance()->config().getOption<bool>("d3d11.enableRemix", false);
+    const XXH64_hash_t rtInstanceId = rtInstance.getId();
+    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Reading material hash."));
     const XXH64_hash_t matHash = rtInstance.getMaterialDataHash();
-    const XXH64_hash_t meshHash = pBlas->input.getHash(RtxOptions::geometryAssetHashRule());
+    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Material hash read."));
+    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Reading mesh hash."));
+    const XXH64_hash_t meshHash = isD3D11Remix
+      ? XXH64(&rtInstanceId, sizeof(XXH64_hash_t), matHash)
+      : pBlas->input.getHash(RtxOptions::geometryAssetHashRule());
+    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Mesh hash read."));
+    if (isD3D11Remix) {
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()),
+        "] DX11 Capture Scene is using an instance-derived mesh hash to avoid the current draw-hash crash path."));
+    }
     if (meshHash == 0) {
       Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Skipping new instance because the mesh hash is zero."));
       return;
     }
 
+    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()),
+      "] Resolving material hash ", hashToString(matHash), " and mesh hash ", hashToString(meshHash), "."));
     const LegacyMaterialData& material = pBlas->getMaterialData(matHash);
+    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Material resolved."));
 
     const bool bIsNewMat = (matHash != 0x0) && (m_pCap->materials.count(matHash) == 0);
     if (bIsNewMat) {
+      Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Capturing material."));
       captureMaterial(ctx, material, !rtInstance.surface.alphaState.isFullyOpaque);
+      Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Material captured."));
     }
 
     bool bIsNewMesh = false;
@@ -577,11 +592,13 @@ namespace dxvk {
       instanceNum = m_pCap->meshes[meshHash]->instanceCount++;
     }
     if (bIsNewMesh) {
+      Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Capturing mesh."));
       if (!captureMesh(ctx, meshHash, *pBlas, rtInstance.getCategoryFlags(), true, true, true, true, rtInstance.isFrontFaceFlipped)) {
         std::lock_guard lock(m_meshMutex);
         m_pCap->meshes.erase(meshHash);
         return;
       }
+      Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Mesh captured."));
     }
 
     const XXH64_hash_t instanceId = rtInstance.getId();
