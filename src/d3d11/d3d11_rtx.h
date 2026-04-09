@@ -180,5 +180,13 @@ namespace dxvk {
     uint64_t m_pendingDrawCalls = 0;
     uint32_t m_screenWidth = 0;
     uint32_t m_screenHeight = 0;
+    // NV-DXVK start: Cache last known good transforms across frames so draws
+    // are not rejected when the current frame's constant buffers lack valid
+    // projection or view matrices (e.g. during post-process passes).
+    Matrix4 m_cachedViewToProjection;
+    Matrix4 m_cachedObjectToView;
+    bool m_hasCachedViewToProjection = false;
+    bool m_hasCachedObjectToView = false;
+    // NV-DXVK end
   };
 }

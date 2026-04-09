@@ -627,6 +627,9 @@ namespace dxvk {
       
       std::array<DxvkVertexAttribute, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> attrList;
       std::array<DxvkVertexBinding,   D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindList;
+      // NV-DXVK start: Build a parallel semantic array so the RTX capture
+      // path can resolve vertex attributes by semantic name.
+      std::array<D3D11SemanticInfo, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> semList;
       
       for (uint32_t i = 0; i < NumElements; i++) {
         const DxbcSgnEntry* entry = inputSignature->find(
@@ -669,6 +672,14 @@ namespace dxvk {
           return E_INVALIDARG;
 
         attrList.at(i) = attrib;
+
+        // NV-DXVK start: Record the original D3D11 semantic for this attribute.
+        D3D11SemanticInfo sem;
+        if (pInputElementDescs[i].SemanticName != nullptr)
+          sem.name = pInputElementDescs[i].SemanticName;
+        sem.index = pInputElementDescs[i].SemanticIndex;
+        semList.at(i) = sem;
+        // NV-DXVK end
         
         // Create vertex input binding description. The
         // stride is dynamic state in D3D11 and will be
@@ -711,6 +722,10 @@ namespace dxvk {
       // out attributes and bindings not used by the shader
       uint32_t attrCount = CompactSparseList(attrList.data(), attrMask);
       uint32_t bindCount = CompactSparseList(bindList.data(), bindMask);
+      // NV-DXVK start: Compact semantics in lock-step with attributes.
+      uint32_t semCount = CompactSparseList(semList.data(), attrMask);
+      (void)semCount; // Should equal attrCount
+      // NV-DXVK end
 
       // Check if there are any semantics defined in the
       // shader that are not included in the current input
@@ -735,7 +750,8 @@ namespace dxvk {
         *ppInputLayout = ref(
           new D3D11InputLayout(this,
             attrCount, attrList.data(),
-            bindCount, bindList.data()));
+            bindCount, bindList.data(),
+            semList.data(), attrCount));
       }
       
       return S_OK;

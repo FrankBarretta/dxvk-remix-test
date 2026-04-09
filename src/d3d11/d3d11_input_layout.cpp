@@ -8,7 +8,9 @@ namespace dxvk {
           uint32_t              numAttributes,
     const DxvkVertexAttribute*  pAttributes,
           uint32_t              numBindings,
-    const DxvkVertexBinding*    pBindings)
+    const DxvkVertexBinding*    pBindings,
+    const D3D11SemanticInfo*    pSemantics,
+          uint32_t              numSemantics)
   : D3D11DeviceChild<ID3D11InputLayout>(pDevice),
     m_d3d10(this) {
     m_attributes.resize(numAttributes);
@@ -19,6 +21,14 @@ namespace dxvk {
     
     for (uint32_t i = 0; i < numBindings; i++)
       m_bindings.at(i) = pBindings[i];
+
+    // NV-DXVK start: Store semantic info for RTX attribute resolution
+    if (pSemantics != nullptr && numSemantics > 0) {
+      m_semantics.resize(numSemantics);
+      for (uint32_t i = 0; i < numSemantics; i++)
+        m_semantics.at(i) = pSemantics[i];
+    }
+    // NV-DXVK end
   }
   
   

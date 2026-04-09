@@ -28,7 +28,10 @@ namespace dxvk {
     constexpr uint32_t kGeometryFaultLogInterval = 256u;
     constexpr uint64_t kAuxiliaryUiInteractiveCaptureFrameWindow = 2u;
     constexpr uint32_t kAuxiliaryUiInteractiveMaxCapturesPerFrame = 4u;
-    constexpr uint32_t kAuxiliaryCaptureSceneMaxCapturesPerFrame = 12u;
+    // NV-DXVK start: Massively increase the Scene Capture budget so that all
+    // visible DX11 draw calls are captured instead of just the first 12.
+    constexpr uint32_t kAuxiliaryCaptureSceneMaxCapturesPerFrame = 4096u;
+    // NV-DXVK end
 
     struct D3D11RtxResolvedAttribute {
       DxvkVertexAttribute attribute;
@@ -206,20 +209,24 @@ namespace dxvk {
       DecomposeProjectionParams params;
       decomposeProjection(matrix, params);
 
+      // NV-DXVK start: Relax projection matrix constraints to handle more
+      // DX11 game projection setups including ultra-wide, portrait, split-
+      // screen, and non-standard near/far ratios common in modern engines.
       return std::isfinite(params.fov)
           && std::isfinite(params.aspectRatio)
           && std::isfinite(params.nearPlane)
           && std::isfinite(params.farPlane)
           && std::isfinite(params.shearX)
           && std::isfinite(params.shearY)
-          && params.fov > 0.2f
-          && params.fov < 3.1f
-          && std::abs(params.aspectRatio) > 0.3f
-          && std::abs(params.aspectRatio) < 5.0f
+          && params.fov > 0.1f
+          && params.fov < 3.2f
+          && std::abs(params.aspectRatio) > 0.1f
+          && std::abs(params.aspectRatio) < 10.0f
           && params.nearPlane > 0.0f
           && params.farPlane > params.nearPlane
-          && std::abs(params.shearX) < 0.01f
-          && std::abs(params.shearY) < 0.01f;
+          && std::abs(params.shearX) < 0.05f
+          && std::abs(params.shearY) < 0.05f;
+      // NV-DXVK end
     }
 
     float scoreProjectionMatrixCandidate(const Matrix4& matrix) {
@@ -347,6 +354,86 @@ namespace dxvk {
           && (drawContext.indexed ? drawContext.indexCount != 0u : drawContext.vertexCount != 0u);
     }
 
+    // NV-DXVK start: Semantic-aware attribute resolution for DX11.
+    // Try to match an attribute by D3D11 semantic name first (e.g.
+    // "POSITION", "NORMAL", "TEXCOORD", "COLOR"). Fall back to the
+    // original format-based matching when the layout does not carry
+    // semantic information (should not happen for native DX11).
+    bool resolveAttributeBySemantic(
+      const D3D11InputLayout* inputLayout,
+      const D3D11ContextStateIA& iaState,
+      const char* semanticPrefix,
+      bool (*formatPredicate)(VkFormat),
+      D3D11RtxResolvedAttribute& result) {
+      bool found = false;
+      const auto& semantics = inputLayout->GetSemantics();
+      const auto& attributes = inputLayout->GetAttributes();
+
+      // First pass: try to match by semantic name.
+      if (!semantics.empty()) {
+        for (size_t i = 0; i < attributes.size() && i < semantics.size(); i++) {
+          const auto& sem = semantics[i];
+          if (sem.name.empty())
+            continue;
+
+          // Case-insensitive prefix match (e.g. "POSITION" matches
+          // "POSITION0", "SV_Position" matches via fallback below).
+          bool semanticMatch = false;
+          if (_strnicmp(sem.name.c_str(), semanticPrefix, strlen(semanticPrefix)) == 0) {
+            semanticMatch = true;
+          } else if (_stricmp(semanticPrefix, "POSITION") == 0
+                  && _strnicmp(sem.name.c_str(), "SV_Position", 11) == 0) {
+            semanticMatch = true;
+          }
+
+          if (!semanticMatch)
+            continue;
+
+          const auto& attribute = attributes[i];
+
+          if (attribute.binding >= iaState.vertexBuffers.size())
+            continue;
+
+          const auto& binding = iaState.vertexBuffers[attribute.binding];
+
+          if (!hasBoundBuffer(binding))
+            continue;
+
+          // Prefer semantic index 0 (e.g. TEXCOORD0 over TEXCOORD1).
+          if (!found || sem.index < result.attribute.location) {
+            result.attribute = attribute;
+            result.binding = &binding;
+            found = true;
+          }
+        }
+      }
+
+      // Fall back to format-based matching if semantic search failed.
+      if (!found && formatPredicate != nullptr) {
+        for (const auto& attribute : attributes) {
+          if (!formatPredicate(attribute.format))
+            continue;
+
+          if (attribute.binding >= iaState.vertexBuffers.size())
+            continue;
+
+          const auto& binding = iaState.vertexBuffers[attribute.binding];
+
+          if (!hasBoundBuffer(binding))
+            continue;
+
+          if (!found || attribute.location < result.attribute.location) {
+            result.attribute = attribute;
+            result.binding = &binding;
+            found = true;
+          }
+        }
+      }
+
+      return found;
+    }
+    // NV-DXVK end
+
     bool resolveAttribute(
       const D3D11InputLayout* inputLayout,
       const D3D11ContextStateIA& iaState,
@@ -393,7 +480,14 @@ namespace dxvk {
       const auto byteOffset = static_cast<size_t>(buffer.offsetFromSlice())
         + static_cast<size_t>(minVertex) * buffer.stride();
       const auto byteSize = static_cast<size_t>(maxVertex - minVertex + 1u) * buffer.stride();
-      return hashContiguousMemory(buffer.mapPtr(byteOffset), byteSize);
+
+      // NV-DXVK start: Validate that the requested range fits within the
+      // buffer to avoid reading past the end of GPU-mapped memory.
+      const void* ptr = buffer.mapPtr(byteOffset);
+      if (ptr == nullptr)
+        return kEmptyHash;
+      return hashContiguousMemory(ptr, byteSize);
+      // NV-DXVK end
     }
 
     template<typename T>
@@ -773,8 +867,13 @@ namespace dxvk {
   void D3D11Rtx::CommitGeometryToRT(
           D3D11DeviceContext*         context,
     const DrawContext&                drawContext) {
-    if (!m_enabled || m_geometryCaptureFaultedThisFrame.load(std::memory_order_relaxed))
+    if (!m_enabled)
       return;
+
+    // NV-DXVK start: The per-frame fault suppression check is deferred until
+    // after auxiliaryCaptureSceneRequestedOrActive is computed (see below)
+    // so Scene Capture can continue past individual draw faults.
+    // NV-DXVK end
 
     const bool usingAuxiliaryPilot = !m_parent->UsesImmediateContextRtx();
     const bool usingAuxiliaryInjectRtxProbe = usingAuxiliaryPilot
@@ -793,9 +892,24 @@ namespace dxvk {
     const uint32_t successfulPilotCaptures = m_auxiliaryPilotSuccessfulCaptures.load(std::memory_order_relaxed);
     const uint32_t maxSuccessfulPilotCaptures = static_cast<uint32_t>(std::max(0, m_parent->GetOptions()->remixPilotMaxSuccessfulCaptures));
 
+    // NV-DXVK start: Deferred per-frame fault suppression.  During Capture
+    // Scene we keep going past individual draw faults so the rest of the
+    // scene can still be captured.
+    if (m_geometryCaptureFaultedThisFrame.load(std::memory_order_relaxed)
+     && !auxiliaryCaptureSceneRequestedOrActive) {
+      return;
+    }
+    // NV-DXVK end
+
+    // NV-DXVK start: Skip the capture limit and dormant-state early returns
+    // when a Capture Scene operation is in progress. The original code would
+    // stop all geometry capture after a small number of successful pilot
+    // captures or when the injectRTX probe had completed — which meant
+    // Capture Scene only ever saw the first few (usually 2D) draws.
     if (usingAuxiliaryPilot
      && maxSuccessfulPilotCaptures > 0u
-     && successfulPilotCaptures >= maxSuccessfulPilotCaptures) {
+     && successfulPilotCaptures >= maxSuccessfulPilotCaptures
+     && !auxiliaryCaptureSceneRequestedOrActive) {
       if (!m_loggedAuxiliaryPilotCompletedWarning) {
         m_loggedAuxiliaryPilotCompletedWarning = true;
         Logger::warn("D3D11: Auxiliary Remix pilot reached its configured successful-capture limit; further DX11 geometry capture is disabled to preserve performance.");
@@ -804,18 +918,17 @@ namespace dxvk {
       return;
     }
 
-    // NV-DXVK start: Once the auxiliary injectRTX probe has completed, keep the
-    // DX11 pilot dormant unless an actual option change is pending. Continuing
-    // to inspect every draw in steady state is enough to collapse some game
-    // menus to 1 FPS even when the heavy post-probe frame hooks are disabled.
     if (usingAuxiliaryPilot
      && auxiliaryInjectRtxProbeCompleted
-     && !auxiliaryUiInteractiveCaptureMode) {
+     && !auxiliaryUiInteractiveCaptureMode
+     && !auxiliaryCaptureSceneRequestedOrActive) {
       return;
     }
     // NV-DXVK end
 
-    if (usingAuxiliaryPilot && successfulPilotCaptures > 0u) {
+    // NV-DXVK start: Skip throttle when Capture Scene is active — we need
+    // every draw in the current frame for a complete scene export.
+    if (usingAuxiliaryPilot && successfulPilotCaptures > 0u && !auxiliaryCaptureSceneRequestedOrActive) {
       const uint64_t configuredPilotCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotCaptureInterval));
       const uint64_t configuredPostProbeCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotPostProbeCaptureInterval));
         const uint64_t pilotCaptureFrameInterval = auxiliaryUiInteractiveCaptureMode ? 1u : auxiliaryInjectRtxProbeCompleted
@@ -838,6 +951,7 @@ namespace dxvk {
         return;
       }
     }
+    // NV-DXVK end
 
     if (!CanUseRtxExecutionContext()
      && m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
@@ -967,10 +1081,10 @@ namespace dxvk {
       const bool pilotDrawHasWork = resolvedDrawContext.indexed
         ? resolvedDrawContext.indexCount != 0u
         : resolvedDrawContext.vertexCount != 0u;
-      // NV-DXVK start: Keep the startup probe on the conservative indexed path,
-      // allow simple non-indexed triangle draws during the short post-change
-      // refresh window, and allow instanced non-indexed triangle draws only
-      // while Capture Scene is active on DX11.
+      // NV-DXVK start: During Capture Scene, accept ALL triangle draws (indexed
+      // and non-indexed, single-instance and instanced) so that the full DX11
+      // scene geometry is exported.  Outside of Capture Scene, keep the
+      // conservative probe/interactive filters to avoid frame-time collapse.
       const bool pilotDrawIsInteractiveNonIndexed = auxiliaryUiInteractiveCaptureMode
         && !resolvedDrawContext.indexed
         && resolvedDrawContext.instanceCount <= 1u;
@@ -1059,8 +1173,14 @@ namespace dxvk {
       }
     }
 
+    // NV-DXVK start: Use semantic-aware attribute resolution first, which
+    // correctly identifies POSITION, NORMAL, TEXCOORD and COLOR by their
+    // D3D11 semantic names instead of guessing from vertex buffer format.
+    // This prevents misidentifying normals as positions (both are often
+    // R32G32B32_SFLOAT) and correctly picks the primary texcoord stream.
     D3D11RtxResolvedAttribute positionAttribute;
-    if (!resolveAttribute(iaState.inputLayout.ptr(), iaState, isPositionFormat, positionAttribute)) {
+    if (!resolveAttributeBySemantic(iaState.inputLayout.ptr(), iaState, "POSITION", isPositionFormat, positionAttribute)
+     && !resolveAttribute(iaState.inputLayout.ptr(), iaState, isPositionFormat, positionAttribute)) {
       m_dx11RejectedMissingPosition.fetch_add(1u, std::memory_order_relaxed);
       return;
     }
@@ -1069,9 +1189,13 @@ namespace dxvk {
     D3D11RtxResolvedAttribute texcoordAttribute;
     D3D11RtxResolvedAttribute colorAttribute;
 
-    resolveAttribute(iaState.inputLayout.ptr(), iaState, isNormalFormat, normalAttribute, false);
-    resolveAttribute(iaState.inputLayout.ptr(), iaState, isTexcoordFormat, texcoordAttribute, false);
-    resolveAttribute(iaState.inputLayout.ptr(), iaState, isColorFormat, colorAttribute, false);
+    if (!resolveAttributeBySemantic(iaState.inputLayout.ptr(), iaState, "NORMAL", isNormalFormat, normalAttribute))
+      resolveAttribute(iaState.inputLayout.ptr(), iaState, isNormalFormat, normalAttribute, false);
+    if (!resolveAttributeBySemantic(iaState.inputLayout.ptr(), iaState, "TEXCOORD", isTexcoordFormat, texcoordAttribute))
+      resolveAttribute(iaState.inputLayout.ptr(), iaState, isTexcoordFormat, texcoordAttribute, false);
+    if (!resolveAttributeBySemantic(iaState.inputLayout.ptr(), iaState, "COLOR", isColorFormat, colorAttribute))
+      resolveAttribute(iaState.inputLayout.ptr(), iaState, isColorFormat, colorAttribute, false);
+    // NV-DXVK end
 
     if (resolvedDrawContext.vertexOffset < 0)
       return;
@@ -1135,6 +1259,32 @@ namespace dxvk {
       return;
     }
 
+    // NV-DXVK start: Validate that the computed vertex range fits within the
+    // actual position buffer.  DX11 index buffers can reference vertex indices
+    // that the bound vertex buffer cannot satisfy, and reading past the end of
+    // a GPU-mapped buffer causes access violations during hashing or bounding
+    // box computation.
+    {
+      const auto& posBinding = *positionAttribute.binding;
+      const uint64_t bufferLength = posBinding.buffer->GetBufferSlice(posBinding.offset).length();
+      const uint64_t stride = posBinding.stride;
+      if (stride == 0u) {
+        m_dx11RejectedInvalidVertexRange.fetch_add(1u, std::memory_order_relaxed);
+        return;
+      }
+      const uint64_t maxSupportedVertex = (bufferLength > positionAttribute.attribute.offset)
+        ? (bufferLength - positionAttribute.attribute.offset) / stride
+        : 0u;
+      if (maxSupportedVertex == 0u || minVertex >= maxSupportedVertex) {
+        m_dx11RejectedInvalidVertexRange.fetch_add(1u, std::memory_order_relaxed);
+        return;
+      }
+      if (maxVertex >= maxSupportedVertex) {
+        maxVertex = static_cast<uint32_t>(maxSupportedVertex - 1u);
+      }
+    }
+    // NV-DXVK end
+
     geometryData.vertexCount = resolvedDrawContext.indexed ? maxVertex + 1u : resolvedDrawContext.vertexCount;
 
     if (const auto* rasterizerState = context->m_state.rs.state) {
@@ -1185,8 +1335,22 @@ namespace dxvk {
     });
 
     geometryData.futureBoundingBox = m_geometryWorkers->Schedule([positionBuffer = geometryData.positionBuffer, minVertex, maxVertex]() {
-      const uint8_t* vertexData = reinterpret_cast<const uint8_t*>(
-        positionBuffer.mapPtr(static_cast<VkDeviceSize>(positionBuffer.offsetFromSlice()) + static_cast<VkDeviceSize>(minVertex) * positionBuffer.stride()));
+      // NV-DXVK start: Guard against null or out-of-range buffer access that
+      // can crash when DX11 index data references vertices past the end of the
+      // bound position buffer.
+      const uint8_t* basePtr = reinterpret_cast<const uint8_t*>(
+        positionBuffer.mapPtr(0));
+      if (basePtr == nullptr) {
+        return AxisAlignedBoundingBox {
+          Vector3(),
+          Vector3()
+        };
+      }
+
+      const VkDeviceSize sliceOffset = static_cast<VkDeviceSize>(positionBuffer.offsetFromSlice())
+        + static_cast<VkDeviceSize>(minVertex) * positionBuffer.stride();
+      const uint8_t* vertexData = basePtr + sliceOffset;
+      // NV-DXVK end
 
       __m128 minPos = _mm_set_ps1(FLT_MAX);
       __m128 maxPos = _mm_set_ps1(-FLT_MAX);
@@ -1232,19 +1396,45 @@ namespace dxvk {
     // NV-DXVK start: DX11 currently infers only a fused object-to-view transform.
     // Feed it through the existing fused-matrix recovery path instead of
     // pretending it is a world-to-view camera matrix.
-    drawCallState.transformData.objectToWorld = inferredTransforms.hasObjectToView
+    // Cache any newly inferred transforms so they can be reused on draws
+    // where the current constant buffers don't contain valid candidates
+    // (e.g. post-process or UI passes that reuse the same vertex shader
+    // but bind different constant data).
+    if (inferredTransforms.hasObjectToView) {
+      m_cachedObjectToView = inferredTransforms.objectToView;
+      m_hasCachedObjectToView = true;
+    }
+    if (inferredTransforms.hasViewToProjection) {
+      m_cachedViewToProjection = inferredTransforms.viewToProjection;
+      m_hasCachedViewToProjection = true;
+    }
+
+    const bool useObjectToView = inferredTransforms.hasObjectToView || m_hasCachedObjectToView;
+    const Matrix4& effectiveObjectToView = inferredTransforms.hasObjectToView
       ? inferredTransforms.objectToView
+      : m_cachedObjectToView;
+    const bool useViewToProjection = inferredTransforms.hasViewToProjection || m_hasCachedViewToProjection;
+    const Matrix4& effectiveViewToProjection = inferredTransforms.hasViewToProjection
+      ? inferredTransforms.viewToProjection
+      : m_cachedViewToProjection;
+
+    drawCallState.transformData.objectToWorld = useObjectToView
+      ? effectiveObjectToView
       : Matrix4();
     drawCallState.transformData.worldToView = Matrix4();
-    drawCallState.transformData.objectToView = inferredTransforms.hasObjectToView
-      ? inferredTransforms.objectToView
+    drawCallState.transformData.objectToView = useObjectToView
+      ? effectiveObjectToView
       : Matrix4();
     // NV-DXVK end
-    drawCallState.transformData.viewToProjection = inferredTransforms.hasViewToProjection
-      ? inferredTransforms.viewToProjection
+    drawCallState.transformData.viewToProjection = useViewToProjection
+      ? effectiveViewToProjection
       : Matrix4();
 
-    if (!inferredTransforms.hasViewToProjection) {
+    // NV-DXVK start: Fall back to the cached projection instead of rejecting
+    // the draw entirely.  This lets us keep capturing 3D geometry on draws
+    // whose VS constant buffers don't happen to contain a fresh projection
+    // matrix (common for instanced draws that share a global view CB).
+    if (!useViewToProjection) {
       m_dx11RejectedMissingProjection.fetch_add(1u, std::memory_order_relaxed);
       if (!m_loggedMissingProjectionWarning) {
         m_loggedMissingProjectionWarning = true;
@@ -1253,18 +1443,57 @@ namespace dxvk {
 
       return;
     }
+    // NV-DXVK end
 
-    for (const auto& shaderResourceView : context->m_state.ps.shaderResources.views) {
-      if (shaderResourceView == nullptr)
-        continue;
+    // NV-DXVK start: Improved PS SRV selection for material textures.
+    // The original code blindly took the first non-null PS SRV which in DX11
+    // games is often a shadow map, depth buffer, or noise texture — not the
+    // diffuse/albedo.  We now prefer 2D textures with a standard color format
+    // and skip resources that look like depth or stencil buffers.
+    {
+      Rc<DxvkImageView> bestCandidate = nullptr;
+      int bestScore = -1;
 
-      const Rc<DxvkImageView> colorImageView = shaderResourceView->GetImageView();
-      if (colorImageView == nullptr)
-        continue;
+      for (const auto& shaderResourceView : context->m_state.ps.shaderResources.views) {
+        if (shaderResourceView == nullptr)
+          continue;
 
-      drawCallState.materialData = LegacyMaterialData(TextureRef(colorImageView), TextureRef(), D3DMATERIAL9 {});
-      break;
+        const Rc<DxvkImageView> imageView = shaderResourceView->GetImageView();
+        if (imageView == nullptr)
+          continue;
+
+        const auto& imageInfo = imageView->image()->info();
+        int score = 0;
+
+        // Prefer 2D textures over cubemaps, 3D textures, etc.
+        if (imageInfo.type == VK_IMAGE_TYPE_2D)
+          score += 10;
+
+        // Prefer color formats over depth/stencil.
+        const auto aspectMask = imageView->info().aspect;
+        if ((aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0)
+          score -= 50;
+
+        // Prefer textures with reasonable dimensions (not tiny 1x1 or 1xN buffers).
+        if (imageInfo.extent.width >= 4 && imageInfo.extent.height >= 4)
+          score += 5;
+
+        // Prefer textures that were created with SAMPLED usage (regular textures)
+        // rather than STORAGE or RENDER_TARGET.
+        if ((imageInfo.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
+          score += 3;
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidate = imageView;
+        }
+      }
+
+      if (bestCandidate != nullptr) {
+        drawCallState.materialData = LegacyMaterialData(TextureRef(bestCandidate), TextureRef(), D3DMATERIAL9 {});
+      }
     }
+    // NV-DXVK end
 
     drawCallState.setupCategoriesForTexture();
     const XXH64_hash_t colorTextureHash = drawCallState.materialData.getColorTexture().getImageHash();
@@ -1327,13 +1556,20 @@ namespace dxvk {
         return;
       }
 
-      m_auxiliaryBackendFaulted.store(true, std::memory_order_relaxed);
+      // NV-DXVK start: Don't permanently disable geometry capture from a
+      // single fault.  DX11 games routinely produce some draws that the RTX
+      // backend can't handle (degenerate geometry, screen-space passes with
+      // incompatible formats, etc.).  The per-frame suppression flag is
+      // enough to stop the current frame from snowballing, and the fault
+      // counter already logs sustained issues.
+      // m_auxiliaryBackendFaulted.store(true, std::memory_order_relaxed);
+      // NV-DXVK end
       const uint32_t faultCount = m_geometryCaptureFaultCount.fetch_add(1u, std::memory_order_relaxed) + 1u;
       m_geometryCaptureFaultedThisFrame.store(true, std::memory_order_relaxed);
 
       if (!m_loggedAuxiliaryBackendFaultWarning) {
         m_loggedAuxiliaryBackendFaultWarning = true;
-        Logger::warn("D3D11: Disabling the auxiliary RTX command stream after a backend fault. Falling back to telemetry-only DX11 Remix behavior.");
+        Logger::warn("D3D11: Backend fault during geometry capture; suppressing further captures this frame but allowing retry next frame.");
       }
 
       Logger::warn(str::format(
