@@ -512,21 +512,31 @@ namespace dxvk {
       && !m_parent->UsesImmediateContextRtx()
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms();
-    const bool auxiliaryUiRecentlyRequestedRefresh = isAuxiliaryRemixPath
-      && auxiliaryInjectRtxProbeCompleted
-      && m_parent->RTX().WasUiOptionRefreshRequestedRecently();
+    // NV-DXVK start: Allow a very short post-apply refresh window so DX11 menu
+    // changes can rebuild enough scene state to become visible, without keeping
+    // the auxiliary path hot just because the UI is open.
     const bool auxiliaryUiRefreshRequested = isAuxiliaryRemixPath
       && auxiliaryInjectRtxProbeCompleted
-      && (RtxOptions::showUI() != UIType::None || auxiliaryUiRecentlyRequestedRefresh);
+      && m_parent->RTX().WasUiOptionRefreshRequestedRecently();
+    // NV-DXVK end
+    const bool guardedOptionRefreshRequested = isPrimarySwapChain
+      && useGuardedRtxFrameHooks
+      && RtxOptionManager::hasPendingChanges();
     const bool auxiliaryOptionRefreshRequested = isAuxiliaryRemixPath
       && auxiliaryInjectRtxProbeCompleted
       && RtxOptionManager::hasPendingChanges();
+    const bool remixOptionRefreshRequested = guardedOptionRefreshRequested
+      || auxiliaryOptionRefreshRequested;
 
-    // NV-DXVK start: Flush UI-driven option changes before the auxiliary post-probe refresh frame
-    if (auxiliaryOptionRefreshRequested) {
-      m_parent->RTX().NotifyUiOptionRefreshRequested();
+    // NV-DXVK start: Flush DX11 Remix option changes only at the safe present boundary.
+    if (remixOptionRefreshRequested) {
       RtxOptionManager::applyPendingValuesOptionLayers();
       RtxOptionManager::applyPendingValues(m_device.ptr());
+
+      if (auxiliaryOptionRefreshRequested
+       && !RtxOptionManager::hasPendingChanges()) {
+        m_parent->RTX().NotifyUiOptionRefreshRequested();
+      }
     }
     // NV-DXVK end
 
@@ -544,10 +554,10 @@ namespace dxvk {
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms()
       && auxiliaryInjectRtxProbeCompleted
-      && (m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame() || auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested);
+      && (auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested);
     const bool useAuxiliaryInjectRtxAfterProbe = useAuxiliaryFullEndFrameAfterProbe
       && m_parent->GetOptions()->remixPilotEnableInjectRtxAfterProbe
-      && (m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame() || auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested);
+      && (auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested);
 
     const bool useAuxiliaryResetScreenResolution = (useAuxiliarySceneCaptureEndFrame || useAuxiliaryFullEndFrameAfterProbe)
       && m_parent->GetOptions()->remixPilotEnableResetScreenResolution;
@@ -589,6 +599,21 @@ namespace dxvk {
 
     if (tracePresent)
       D3D11EarlyTrace("D3D11SwapChain::PresentImage after immediate Flush");
+
+    // NV-DXVK start: Reflex integration
+    const bool useReflexSimulationMarkers = isPrimarySwapChain
+      && remixEnabled
+      && m_parent->RTX().CanUseRtxExecutionContext();
+    const uint64_t currentReflexFrameId = useReflexSimulationMarkers
+      ? m_parent->RTX().GetCurrentReflexFrameId()
+      : 0u;
+
+    if (useReflexSimulationMarkers) {
+      auto& reflex = m_device->getCommon()->metaReflex();
+      reflex.setLatencyPingThread();
+      reflex.endSimulation(currentReflexFrameId);
+    }
+    // NV-DXVK end
 
     // Bump our frame id.
     ++m_frameId;
@@ -652,14 +677,6 @@ namespace dxvk {
         gui.render(m_window, m_context, info.format, info.imageExtent, m_vsync);
       }
 
-      const bool auxiliaryGuiOptionRefreshRequested = isAuxiliaryRemixPath
-        && isPrimarySwapChain
-        && RtxOptionManager::hasPendingChanges();
-
-      if (auxiliaryGuiOptionRefreshRequested) {
-        m_parent->RTX().NotifyUiOptionRefreshRequested();
-      }
-
       if (tracePresent)
         D3D11EarlyTrace("D3D11SwapChain::PresentImage ImGUI render complete");
 
@@ -695,13 +712,30 @@ namespace dxvk {
       if (i + 1 >= SyncInterval)
         m_context->signal(m_frameLatencySignal, m_frameId);
 
-      SubmitPresent(immediateContext, sync, i, imageIndex, useRemixPresentPath, !remixEnabled || isPrimarySwapChain);
+      SubmitPresent(immediateContext, sync, i, imageIndex,
+        useRemixPresentPath,
+        !remixEnabled || isPrimarySwapChain,
+        useReflexSimulationMarkers,
+        currentReflexFrameId);
 
       if (tracePresent)
         D3D11EarlyTrace("D3D11SwapChain::PresentImage SubmitPresent complete");
     }
 
     SyncFrameLatency();
+
+    // NV-DXVK start: Reflex integration
+    if (useReflexSimulationMarkers) {
+      auto& reflex = m_device->getCommon()->metaReflex();
+
+      reflex.sleep();
+      m_parent->RTX().IncrementReflexFrameId();
+
+      const auto nextReflexFrameId = m_parent->RTX().GetCurrentReflexFrameId();
+      reflex.beginSimulation(nextReflexFrameId);
+      reflex.latencyPing(nextReflexFrameId);
+    }
+    // NV-DXVK end
 
     if (tracePresent)
       D3D11EarlyTrace("D3D11SwapChain::PresentImage complete");
@@ -713,18 +747,13 @@ namespace dxvk {
   void D3D11SwapChain::SubmitPresent(
           D3D11ImmediateContext*  pContext,
     const vk::PresenterSync&      Sync,
-      uint32_t                FrameId,
-      uint32_t                ImageIndex,
+    uint32_t                FrameId,
+    uint32_t                ImageIndex,
     bool                    useRemixPresentPath,
-    bool                    incrementPresentCount) {
+    bool                    incrementPresentCount,
+    bool                    useReflexPresentMarkers,
+    uint64_t                currentReflexFrameId) {
     D3D11EarlyTrace("D3D11SwapChain::SubmitPresent enter");
-
-    const bool useReflexPresentMarkers = incrementPresentCount
-      && m_parent->GetOptions()->enableRemix
-      && m_parent->RTX().CanUseRtxExecutionContext();
-    const uint64_t currentReflexFrameId = useReflexPresentMarkers
-      ? m_parent->RTX().GetCurrentReflexFrameId()
-      : 0u;
 
     auto lock = pContext->LockContext();
 

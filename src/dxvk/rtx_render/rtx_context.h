@@ -276,6 +276,9 @@ namespace dxvk {
     bool m_d3d11HasFreshSceneDataForNextInject = true;
     bool m_loggedD3D11SceneReuseWarning = false;
     bool m_loggedD3D11StaleCameraReuseWarning = false;
+    bool m_loggedD3D11InjectSurfaceBufferReady = false;
+    bool m_loggedD3D11InjectMissingSurfaceBuffer = false;
+    bool m_loggedD3D11InjectBlitToGame = false;
     IntegrateIndirectMode m_prevIntegrateIndirectMode = IntegrateIndirectMode::Count;
 
     DxvkRaytracingInstanceState m_rtState;

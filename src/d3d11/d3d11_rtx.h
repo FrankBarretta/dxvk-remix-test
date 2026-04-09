@@ -94,6 +94,8 @@ namespace dxvk {
             D3D11ImmediateContext*      context,
       const Rc<DxvkImage>&              targetImage);
 
+    void IncrementReflexFrameId();
+
     void AdvanceFrameIdForPresentBypass();
 
     template<typename T>
@@ -159,6 +161,19 @@ namespace dxvk {
     std::atomic<uint32_t> m_auxiliaryPilotSuccessfulCaptures = 0;
     std::atomic<uint32_t> m_geometryCaptureFaultCount = 0;
     std::atomic<uint64_t> m_lastAuxiliaryUiOptionRefreshFrame = UINT64_MAX;
+    std::atomic<uint32_t> m_dx11RejectedUnsupportedPilotDraws = 0;
+    std::atomic<uint32_t> m_dx11RejectedPilotNonIndexed = 0;
+    std::atomic<uint32_t> m_dx11RejectedPilotNonIndexedSingleInstance = 0;
+    std::atomic<uint32_t> m_dx11RejectedPilotNonIndexedInstanced = 0;
+    std::atomic<uint32_t> m_dx11RejectedPilotNonTriangle = 0;
+    std::atomic<uint32_t> m_dx11RejectedPilotZeroCount = 0;
+    std::atomic<uint32_t> m_dx11RejectedThrottleOrBudget = 0;
+    std::atomic<uint32_t> m_dx11RejectedMissingProjection = 0;
+    std::atomic<uint32_t> m_dx11RejectedMissingInputLayout = 0;
+    std::atomic<uint32_t> m_dx11RejectedUnsupportedTopology = 0;
+    std::atomic<uint32_t> m_dx11RejectedInvalidIndexBuffer = 0;
+    std::atomic<uint32_t> m_dx11RejectedMissingPosition = 0;
+    std::atomic<uint32_t> m_dx11RejectedInvalidVertexRange = 0;
     uint64_t m_reflexFrameId = 0;
     uint64_t m_lastAuxiliaryPilotCaptureFrame = UINT64_MAX;
     uint64_t m_lastAuxiliaryInjectRtxCaptureFrame = UINT64_MAX;

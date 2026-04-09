@@ -26,7 +26,8 @@ namespace dxvk {
 
   namespace {
     constexpr uint32_t kGeometryFaultLogInterval = 256u;
-    constexpr uint64_t kAuxiliaryUiInteractiveCaptureFrameWindow = 12u;
+    constexpr uint64_t kAuxiliaryUiInteractiveCaptureFrameWindow = 2u;
+    constexpr uint32_t kAuxiliaryUiInteractiveMaxCapturesPerFrame = 4u;
 
     struct D3D11RtxResolvedAttribute {
       DxvkVertexAttribute attribute;
@@ -220,28 +221,53 @@ namespace dxvk {
           && std::abs(params.shearY) < 0.01f;
     }
 
+    float scoreProjectionMatrixCandidate(const Matrix4& matrix) {
+      DecomposeProjectionParams params;
+      decomposeProjection(matrix, params);
+
+      if (!std::isfinite(params.nearPlane)
+       || !std::isfinite(params.farPlane)
+       || params.nearPlane <= 0.0f
+       || params.farPlane <= params.nearPlane) {
+        return -FLT_MAX;
+      }
+
+      const float depthRange = params.farPlane / params.nearPlane;
+      const float farPlaneScore = std::log2(std::max(params.farPlane, 1.0f));
+      const float depthRangeScore = std::log2(std::max(depthRange, 1.0f));
+      const float aspectPenalty = std::abs(std::abs(params.aspectRatio) - (16.0f / 9.0f));
+      const float shearPenalty = std::abs(params.shearX) + std::abs(params.shearY);
+
+      // Prefer perspective matrices with a large usable depth range and a
+      // common display aspect ratio. This avoids latching onto tiny helper
+      // projections that technically decompose but produce a degenerate frustum.
+      return farPlaneScore + depthRangeScore - aspectPenalty - shearPenalty * 100.0f;
+    }
+
+    float scoreAffineTransformCandidate(const Matrix4& matrix) {
+      const Vector3 translation(matrix[3][0], matrix[3][1], matrix[3][2]);
+      const float translationScore = std::log2(1.0f + length(translation));
+
+      const float axisLengthX = length(Vector3(matrix[0][0], matrix[0][1], matrix[0][2]));
+      const float axisLengthY = length(Vector3(matrix[1][0], matrix[1][1], matrix[1][2]));
+      const float axisLengthZ = length(Vector3(matrix[2][0], matrix[2][1], matrix[2][2]));
+      const float uniformityPenalty = std::abs(axisLengthX - axisLengthY)
+        + std::abs(axisLengthY - axisLengthZ)
+        + std::abs(axisLengthZ - axisLengthX);
+
+      return translationScore - uniformityPenalty;
+    }
+
     Matrix4 loadMatrix4(const uint8_t* data) {
       Matrix4 matrix;
       std::memcpy(&matrix, data, sizeof(matrix));
       return matrix;
     }
 
-    bool considerMatrixCandidate(const Matrix4& candidate, D3D11RtxInferredTransforms& inferred) {
-      if (!inferred.hasViewToProjection && isCandidateProjectionMatrix(candidate)) {
-        inferred.viewToProjection = candidate;
-        inferred.hasViewToProjection = true;
-      }
-
-      if (!inferred.hasObjectToView && isCandidateAffineTransform(candidate)) {
-        inferred.objectToView = candidate;
-        inferred.hasObjectToView = true;
-      }
-
-      return inferred.hasObjectToView && inferred.hasViewToProjection;
-    }
-
     D3D11RtxInferredTransforms inferTransformsFromVsConstants(const D3D11ContextStateVS& vsState) {
       D3D11RtxInferredTransforms inferred;
+      float bestProjectionScore = -FLT_MAX;
+      float bestObjectToViewScore = -FLT_MAX;
 
       for (const auto& binding : vsState.constantBuffers) {
         if (binding.buffer == nullptr || binding.constantBound < 4u)
@@ -256,13 +282,30 @@ namespace dxvk {
           continue;
 
         for (VkDeviceSize candidateOffset = 0u; candidateOffset + sizeof(Matrix4) <= byteLength; candidateOffset += 16u) {
-          const Matrix4 candidate = loadMatrix4(data + candidateOffset);
-          if (considerMatrixCandidate(candidate, inferred))
-            return inferred;
+          const Matrix4 candidates[] = {
+            loadMatrix4(data + candidateOffset),
+            transpose(loadMatrix4(data + candidateOffset))
+          };
 
-          const Matrix4 candidateTranspose = transpose(candidate);
-          if (considerMatrixCandidate(candidateTranspose, inferred))
-            return inferred;
+          for (const auto& candidate : candidates) {
+            if (isCandidateProjectionMatrix(candidate)) {
+              const float score = scoreProjectionMatrixCandidate(candidate);
+              if (score > bestProjectionScore) {
+                inferred.viewToProjection = candidate;
+                inferred.hasViewToProjection = true;
+                bestProjectionScore = score;
+              }
+            }
+
+            if (isCandidateAffineTransform(candidate)) {
+              const float score = scoreAffineTransformCandidate(candidate);
+              if (score > bestObjectToViewScore) {
+                inferred.objectToView = candidate;
+                inferred.hasObjectToView = true;
+                bestObjectToViewScore = score;
+              }
+            }
+          }
         }
       }
 
@@ -740,16 +783,9 @@ namespace dxvk {
     const bool auxiliaryInjectRtxProbeCompleted = m_auxiliaryInjectRtxProbeCompleted.load(std::memory_order_relaxed);
     // NV-DXVK start: Treat the auxiliary injectRTX probe as active only until it succeeds once
       const bool auxiliaryInjectRtxProbeStillPending = usingAuxiliaryInjectRtxProbe && !auxiliaryInjectRtxProbeCompleted;
-      const uint64_t lastAuxiliaryUiOptionRefreshFrame = m_lastAuxiliaryUiOptionRefreshFrame.load(std::memory_order_relaxed);
-      const bool auxiliaryUiRecentlyRequestedRefresh = usingAuxiliaryPilot
-        && auxiliaryInjectRtxProbeCompleted
-        && lastAuxiliaryUiOptionRefreshFrame != UINT64_MAX
-        && m_reflexFrameId <= lastAuxiliaryUiOptionRefreshFrame + kAuxiliaryUiInteractiveCaptureFrameWindow;
       const bool auxiliaryUiInteractiveCaptureMode = usingAuxiliaryPilot
         && auxiliaryInjectRtxProbeCompleted
-        && (RtxOptions::showUI() != UIType::None
-          || RtxOptionManager::hasPendingChanges()
-          || auxiliaryUiRecentlyRequestedRefresh);
+        && WasUiOptionRefreshRequestedRecently();
     // NV-DXVK end
     const uint32_t successfulPilotCaptures = m_auxiliaryPilotSuccessfulCaptures.load(std::memory_order_relaxed);
     const uint32_t maxSuccessfulPilotCaptures = static_cast<uint32_t>(std::max(0, m_parent->GetOptions()->remixPilotMaxSuccessfulCaptures));
@@ -765,6 +801,17 @@ namespace dxvk {
       return;
     }
 
+    // NV-DXVK start: Once the auxiliary injectRTX probe has completed, keep the
+    // DX11 pilot dormant unless an actual option change is pending. Continuing
+    // to inspect every draw in steady state is enough to collapse some game
+    // menus to 1 FPS even when the heavy post-probe frame hooks are disabled.
+    if (usingAuxiliaryPilot
+     && auxiliaryInjectRtxProbeCompleted
+     && !auxiliaryUiInteractiveCaptureMode) {
+      return;
+    }
+    // NV-DXVK end
+
     if (usingAuxiliaryPilot && successfulPilotCaptures > 0u) {
       const uint64_t configuredPilotCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotCaptureInterval));
       const uint64_t configuredPostProbeCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotPostProbeCaptureInterval));
@@ -774,7 +821,9 @@ namespace dxvk {
 
       if (pilotCaptureFrameInterval > 0u
        && m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX
+       && m_reflexFrameId != m_lastAuxiliaryPilotCaptureFrame
        && m_reflexFrameId < m_lastAuxiliaryPilotCaptureFrame + pilotCaptureFrameInterval) {
+        m_dx11RejectedThrottleOrBudget.fetch_add(1u, std::memory_order_relaxed);
         if (!m_loggedAuxiliaryPilotThrottleWarning) {
           m_loggedAuxiliaryPilotThrottleWarning = true;
           Logger::warn(str::format(
@@ -866,12 +915,16 @@ namespace dxvk {
 
     auto& iaState = context->m_state.ia;
 
-    if (iaState.inputLayout == nullptr)
+    if (iaState.inputLayout == nullptr) {
+      m_dx11RejectedMissingInputLayout.fetch_add(1u, std::memory_order_relaxed);
       return;
+    }
 
     VkPrimitiveTopology vkTopology = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
-    if (!isSupportedTopology(iaState.primitiveTopology, vkTopology))
+    if (!isSupportedTopology(iaState.primitiveTopology, vkTopology)) {
+      m_dx11RejectedUnsupportedTopology.fetch_add(1u, std::memory_order_relaxed);
       return;
+    }
 
     if (!m_parent->UsesImmediateContextRtx()) {
       const uint64_t configuredPilotCaptureFrameInterval = static_cast<uint64_t>(std::max(0, m_parent->GetOptions()->remixPilotCaptureInterval));
@@ -887,34 +940,72 @@ namespace dxvk {
         : auxiliaryInjectRtxProbeCompleted
           ? std::max(configuredPilotCaptureFrameInterval, configuredPostProbeCaptureFrameInterval)
           : configuredPilotCaptureFrameInterval;
-      const uint32_t interactivePilotMaxCapturesPerFrame = 1u;
+      // NV-DXVK start: Keep post-probe baseline capture conservative unless the UI
+      // is actively refreshing the scene, otherwise menus can collapse to 1 FPS.
+      const uint32_t interactivePilotMaxCapturesPerFrame = std::min(configuredMaxPilotCapturesPerFrame, kAuxiliaryUiInteractiveMaxCapturesPerFrame);
+      const uint32_t steadyStatePostProbeMaxCapturesPerFrame = 1u;
+      // NV-DXVK end
       const uint32_t maxPilotCapturesPerFrame = auxiliaryUiInteractiveCaptureMode
         ? interactivePilotMaxCapturesPerFrame
         : auxiliaryInjectRtxProbeStillPending
         ? std::min(configuredMaxPilotCapturesPerFrame, configuredProbeMaxPilotCapturesPerFrame)
         : auxiliaryInjectRtxProbeCompleted
-          ? std::min(configuredMaxPilotCapturesPerFrame, configuredPostProbeMaxPilotCapturesPerFrame)
+          ? std::min(std::min(configuredMaxPilotCapturesPerFrame, configuredPostProbeMaxPilotCapturesPerFrame), steadyStatePostProbeMaxCapturesPerFrame)
           : configuredMaxPilotCapturesPerFrame;
-      const bool supportedPilotDraw = resolvedDrawContext.indexed
-        && resolvedDrawContext.instanceCount <= 1u
-        && resolvedDrawContext.indexCount != 0u
-        && vkTopology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      // NV-DXVK start: The RTX path already propagates instanceCount through
+      // DrawParameters, so filtering out instanced indexed triangle lists here
+      // was unnecessarily dropping a large part of DX11 scene geometry.
+      const bool pilotDrawIsTriangle = vkTopology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+        || vkTopology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+      const bool pilotDrawHasWork = resolvedDrawContext.indexed
+        ? resolvedDrawContext.indexCount != 0u
+        : resolvedDrawContext.vertexCount != 0u;
+      // NV-DXVK start: Keep the startup probe on the conservative indexed path,
+      // but allow simple non-indexed triangle draws during the short post-change
+      // refresh window. Logs show these are a smaller subset than instanced
+      // non-indexed draws and are the safest next expansion to test.
+      const bool pilotDrawIsInteractiveNonIndexed = auxiliaryUiInteractiveCaptureMode
+        && !resolvedDrawContext.indexed
+        && resolvedDrawContext.instanceCount <= 1u;
+      const bool supportedPilotDraw = (resolvedDrawContext.indexed || pilotDrawIsInteractiveNonIndexed)
+        && pilotDrawHasWork
+        && pilotDrawIsTriangle;
+      // NV-DXVK end
+      // NV-DXVK end
 
       if (!supportedPilotDraw) {
+        m_dx11RejectedUnsupportedPilotDraws.fetch_add(1u, std::memory_order_relaxed);
+        if (!resolvedDrawContext.indexed) {
+          m_dx11RejectedPilotNonIndexed.fetch_add(1u, std::memory_order_relaxed);
+          if (resolvedDrawContext.instanceCount <= 1u) {
+            m_dx11RejectedPilotNonIndexedSingleInstance.fetch_add(1u, std::memory_order_relaxed);
+          } else {
+            m_dx11RejectedPilotNonIndexedInstanced.fetch_add(1u, std::memory_order_relaxed);
+          }
+        } else if (!pilotDrawHasWork) {
+          m_dx11RejectedPilotZeroCount.fetch_add(1u, std::memory_order_relaxed);
+        } else if (!pilotDrawIsTriangle) {
+          m_dx11RejectedPilotNonTriangle.fetch_add(1u, std::memory_order_relaxed);
+        }
+
         if (!m_loggedAuxiliaryPilotFilterWarning) {
           m_loggedAuxiliaryPilotFilterWarning = true;
-          Logger::warn("D3D11: Auxiliary Remix pilot is skipping non-indexed, instanced, or non-triangle-list draws while geometry capture is reintroduced incrementally.");
+          Logger::warn("D3D11: Auxiliary Remix pilot is skipping non-indexed or non-triangle draws while geometry capture is reintroduced incrementally.");
         }
 
         return;
       }
 
-      if (m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) >= maxPilotCapturesPerFrame)
+      if (m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) >= maxPilotCapturesPerFrame) {
+        m_dx11RejectedThrottleOrBudget.fetch_add(1u, std::memory_order_relaxed);
         return;
+      }
 
       if (pilotCaptureFrameInterval > 0u
        && m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX
+       && m_reflexFrameId != m_lastAuxiliaryPilotCaptureFrame
        && m_reflexFrameId < m_lastAuxiliaryPilotCaptureFrame + pilotCaptureFrameInterval) {
+        m_dx11RejectedThrottleOrBudget.fetch_add(1u, std::memory_order_relaxed);
         if (!m_loggedAuxiliaryPilotThrottleWarning) {
           m_loggedAuxiliaryPilotThrottleWarning = true;
           Logger::warn(str::format(
@@ -937,8 +1028,10 @@ namespace dxvk {
 
     VkIndexType indexType = VK_INDEX_TYPE_NONE_KHR;
     if (resolvedDrawContext.indexed) {
-      if (iaState.indexBuffer.buffer == nullptr || resolvedDrawContext.indexCount == 0u)
+      if (iaState.indexBuffer.buffer == nullptr || resolvedDrawContext.indexCount == 0u) {
+        m_dx11RejectedInvalidIndexBuffer.fetch_add(1u, std::memory_order_relaxed);
         return;
+      }
 
       switch (iaState.indexBuffer.format) {
         case DXGI_FORMAT_R16_UINT:
@@ -950,13 +1043,16 @@ namespace dxvk {
           break;
 
         default:
+          m_dx11RejectedInvalidIndexBuffer.fetch_add(1u, std::memory_order_relaxed);
           return;
       }
     }
 
     D3D11RtxResolvedAttribute positionAttribute;
-    if (!resolveAttribute(iaState.inputLayout.ptr(), iaState, isPositionFormat, positionAttribute))
+    if (!resolveAttribute(iaState.inputLayout.ptr(), iaState, isPositionFormat, positionAttribute)) {
+      m_dx11RejectedMissingPosition.fetch_add(1u, std::memory_order_relaxed);
       return;
+    }
 
     D3D11RtxResolvedAttribute normalAttribute;
     D3D11RtxResolvedAttribute texcoordAttribute;
@@ -1023,8 +1119,10 @@ namespace dxvk {
       maxVertex = resolvedDrawContext.firstVertex + resolvedDrawContext.vertexCount - 1u;
     }
 
-    if (!haveValidRange)
+    if (!haveValidRange) {
+      m_dx11RejectedInvalidVertexRange.fetch_add(1u, std::memory_order_relaxed);
       return;
+    }
 
     geometryData.vertexCount = resolvedDrawContext.indexed ? maxVertex + 1u : resolvedDrawContext.vertexCount;
 
@@ -1120,18 +1218,23 @@ namespace dxvk {
       drawCallState.zWriteEnable = depthStencilDesc.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ALL;
       drawCallState.stencilEnabled = depthStencilDesc.StencilEnable;
     }
-    drawCallState.transformData.objectToWorld = Matrix4();
-    drawCallState.transformData.worldToView = inferredTransforms.hasObjectToView
+    // NV-DXVK start: DX11 currently infers only a fused object-to-view transform.
+    // Feed it through the existing fused-matrix recovery path instead of
+    // pretending it is a world-to-view camera matrix.
+    drawCallState.transformData.objectToWorld = inferredTransforms.hasObjectToView
       ? inferredTransforms.objectToView
       : Matrix4();
+    drawCallState.transformData.worldToView = Matrix4();
     drawCallState.transformData.objectToView = inferredTransforms.hasObjectToView
       ? inferredTransforms.objectToView
       : Matrix4();
+    // NV-DXVK end
     drawCallState.transformData.viewToProjection = inferredTransforms.hasViewToProjection
       ? inferredTransforms.viewToProjection
       : Matrix4();
 
     if (!inferredTransforms.hasViewToProjection) {
+      m_dx11RejectedMissingProjection.fetch_add(1u, std::memory_order_relaxed);
       if (!m_loggedMissingProjectionWarning) {
         m_loggedMissingProjectionWarning = true;
         Logger::warn("D3D11: Skipping Remix geometry capture until a projection matrix can be inferred from VS constant buffers.");
@@ -1279,16 +1382,18 @@ namespace dxvk {
       && auxiliaryInjectRtxStageLimit > 0u;
     const bool useAuxiliaryFullEndFrame = auxiliaryFullEndFrameRequested
       && !auxiliaryInjectRtxProbeAlreadyCompleted;
-    const bool useAuxiliaryFullEndFrameAfterProbe = auxiliaryFullEndFrameAfterProbeRequested
-      && auxiliaryInjectRtxProbeAlreadyCompleted;
-    const bool useAuxiliaryInjectRtxAfterProbe = useAuxiliaryFullEndFrameAfterProbe
+    const bool useAuxiliaryInjectRtxAfterProbe = auxiliaryFullEndFrameAfterProbeRequested
+      && auxiliaryInjectRtxProbeAlreadyCompleted
       && m_parent->GetOptions()->remixPilotEnableInjectRtxAfterProbe;
     const bool auxiliaryUiContinuousInjectRequested = useAuxiliaryInjectRtxAfterProbe
-      && (RtxOptions::showUI() != UIType::None || WasUiOptionRefreshRequestedRecently());
+      && WasUiOptionRefreshRequestedRecently();
     const bool shouldRunAuxiliaryInjectRtxAfterProbe = useAuxiliaryInjectRtxAfterProbe
       && (auxiliaryUiContinuousInjectRequested
         || (m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX
           && m_lastAuxiliaryPilotCaptureFrame != m_lastAuxiliaryInjectRtxCaptureFrame));
+    const bool useAuxiliaryFullEndFrameAfterProbe = auxiliaryFullEndFrameAfterProbeRequested
+      && auxiliaryInjectRtxProbeAlreadyCompleted
+      && shouldRunAuxiliaryInjectRtxAfterProbe;
     const bool useAuxiliaryAnyFullEndFrame = useAuxiliaryFullEndFrame
       || useAuxiliaryFullEndFrameAfterProbe;
 
@@ -1426,6 +1531,41 @@ namespace dxvk {
 
       logAuxiliaryInjectProbeStep("after post-Emit SynchronizeRtxCs");
 
+      const uint32_t rejectedUnsupportedPilotDraws = m_dx11RejectedUnsupportedPilotDraws.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedPilotNonIndexed = m_dx11RejectedPilotNonIndexed.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedPilotNonIndexedSingleInstance = m_dx11RejectedPilotNonIndexedSingleInstance.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedPilotNonIndexedInstanced = m_dx11RejectedPilotNonIndexedInstanced.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedPilotNonTriangle = m_dx11RejectedPilotNonTriangle.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedPilotZeroCount = m_dx11RejectedPilotZeroCount.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedThrottleOrBudget = m_dx11RejectedThrottleOrBudget.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedMissingProjection = m_dx11RejectedMissingProjection.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedMissingInputLayout = m_dx11RejectedMissingInputLayout.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedUnsupportedTopology = m_dx11RejectedUnsupportedTopology.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedInvalidIndexBuffer = m_dx11RejectedInvalidIndexBuffer.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedMissingPosition = m_dx11RejectedMissingPosition.exchange(0u, std::memory_order_relaxed);
+      const uint32_t rejectedInvalidVertexRange = m_dx11RejectedInvalidVertexRange.exchange(0u, std::memory_order_relaxed);
+      const uint32_t successfulCapturesThisFrame = m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed);
+
+      if (successfulCapturesThisFrame <= 1u
+       || rejectedMissingProjection != 0u
+       || rejectedUnsupportedPilotDraws != 0u) {
+        Logger::warn(str::format(
+          "D3D11: DX11 capture summary this frame: captured=", successfulCapturesThisFrame,
+          ", rejectedMissingProjection=", rejectedMissingProjection,
+          ", rejectedUnsupportedPilotDraws=", rejectedUnsupportedPilotDraws,
+          " [nonIndexed=", rejectedPilotNonIndexed,
+          ", nonIndexedSingleInstance=", rejectedPilotNonIndexedSingleInstance,
+          ", nonIndexedInstanced=", rejectedPilotNonIndexedInstanced,
+          ", nonTriangle=", rejectedPilotNonTriangle,
+          ", zeroCount=", rejectedPilotZeroCount, "]",
+          ", rejectedThrottleOrBudget=", rejectedThrottleOrBudget,
+          ", rejectedMissingInputLayout=", rejectedMissingInputLayout,
+          ", rejectedUnsupportedTopology=", rejectedUnsupportedTopology,
+          ", rejectedInvalidIndexBuffer=", rejectedInvalidIndexBuffer,
+          ", rejectedMissingPosition=", rejectedMissingPosition,
+          ", rejectedInvalidVertexRange=", rejectedInvalidVertexRange, "."));
+      }
+
       m_geometryCaptureFaultedThisFrame.store(false, std::memory_order_relaxed);
       m_hasProjectionMatrixThisFrame.store(false, std::memory_order_relaxed);
       m_auxiliaryPilotCapturesThisFrame.store(0u, std::memory_order_relaxed);
@@ -1465,6 +1605,15 @@ namespace dxvk {
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::EndFrame EmitCs queued");
+
+    m_dx11RejectedUnsupportedPilotDraws.store(0u, std::memory_order_relaxed);
+    m_dx11RejectedThrottleOrBudget.store(0u, std::memory_order_relaxed);
+    m_dx11RejectedMissingProjection.store(0u, std::memory_order_relaxed);
+    m_dx11RejectedMissingInputLayout.store(0u, std::memory_order_relaxed);
+    m_dx11RejectedUnsupportedTopology.store(0u, std::memory_order_relaxed);
+    m_dx11RejectedInvalidIndexBuffer.store(0u, std::memory_order_relaxed);
+    m_dx11RejectedMissingPosition.store(0u, std::memory_order_relaxed);
+    m_dx11RejectedInvalidVertexRange.store(0u, std::memory_order_relaxed);
 
     m_geometryCaptureFaultedThisFrame.store(false, std::memory_order_relaxed);
     m_hasProjectionMatrixThisFrame.store(false, std::memory_order_relaxed);
@@ -1520,10 +1669,15 @@ namespace dxvk {
 
     if (traceFrame)
       D3D11EarlyTrace("D3D11Rtx::OnPresent EmitCs queued");
-
-    m_reflexFrameId += 1;
   }
 
+  void D3D11Rtx::IncrementReflexFrameId() {
+    if (!m_enabled || !CanUseRtxExecutionContext())
+      return;
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_reflexFrameId += 1;
+  }
 
   void D3D11Rtx::AdvanceFrameIdForPresentBypass() {
     if (!m_enabled || !CanUseRtxExecutionContext())
@@ -1534,7 +1688,6 @@ namespace dxvk {
     m_hasProjectionMatrixThisFrame.store(false, std::memory_order_relaxed);
     m_auxiliaryPilotCapturesThisFrame.store(0u, std::memory_order_relaxed);
     m_pendingDrawCalls = 0;
-    m_reflexFrameId += 1;
   }
 
 }

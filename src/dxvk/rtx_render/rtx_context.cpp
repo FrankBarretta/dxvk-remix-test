@@ -545,7 +545,7 @@ namespace dxvk {
     traceInjectStage("after already-injected check");
     logInjectProbeStep("after already-injected check");
 
-    if (m_isD3D11Remix && RtxOptionManager::hasPendingChanges()) {
+    if (!m_isD3D11Remix && RtxOptionManager::hasPendingChanges()) {
       logInjectProbeStep("before pre-render apply-pending-options");
       RtxOptionManager::applyPendingValuesOptionLayers();
       RtxOptionManager::applyPendingValues(m_device.ptr());
@@ -711,6 +711,14 @@ namespace dxvk {
       
       // If we really don't have any RT to do, just bail early (could be UI/menus rendering)
       if (getSceneManager().getSurfaceBuffer() != nullptr) {
+        if (m_isD3D11Remix && !m_loggedD3D11InjectSurfaceBufferReady) {
+          m_loggedD3D11InjectSurfaceBufferReady = true;
+          Logger::warn(str::format(
+            "D3D11: RtxContext::injectRTX reached a prepared scene with a valid surface buffer containing ",
+            getSceneManager().getAccelManager().getSurfaceCount(),
+            " surfaces."));
+        }
+
         traceInjectStage("surface-buffer-present");
         logInjectProbeStep("surface-buffer-present");
 
@@ -923,6 +931,10 @@ namespace dxvk {
           blitImageHelper(this, srcImage, targetImage, VkFilter::VK_FILTER_NEAREST);
           logInjectProbeStep("after blit-to-game");
         }
+        if (m_isD3D11Remix && !m_loggedD3D11InjectBlitToGame) {
+          m_loggedD3D11InjectBlitToGame = true;
+          Logger::warn("D3D11: RtxContext::injectRTX reached blit-to-game, so RTX output was copied into the DX11 present image.");
+        }
         if (stopAfterStage(13u, "after blit-to-game"))
           goto inject_probe_fallback;
         traceInjectStage("after blit-to-game");
@@ -942,6 +954,11 @@ namespace dxvk {
         if (stopAfterStage(14u, "after scene-on-frame-end"))
           goto inject_probe_fallback;
       } else {
+        if (m_isD3D11Remix && !m_loggedD3D11InjectMissingSurfaceBuffer) {
+          m_loggedD3D11InjectMissingSurfaceBuffer = true;
+          Logger::warn("D3D11: RtxContext::injectRTX skipped rendering because the prepared scene had no surface buffer.");
+        }
+
         traceInjectStage("surface-buffer-missing");
         logInjectProbeStep("surface-buffer-missing");
       }
@@ -972,11 +989,16 @@ namespace dxvk {
     logInjectProbeStep("after clear-fog-state");
 
     // apply changes to RtxOptions after the frame has ended
-    logInjectProbeStep("before apply-pending-options");
-    RtxOptionManager::applyPendingValuesOptionLayers();
-    RtxOptionManager::applyPendingValues(m_device.ptr());
-    traceInjectStage("after apply-pending-options");
-    logInjectProbeStep("after apply-pending-options");
+    if (!m_isD3D11Remix) {
+      logInjectProbeStep("before apply-pending-options");
+      RtxOptionManager::applyPendingValuesOptionLayers();
+      RtxOptionManager::applyPendingValues(m_device.ptr());
+      traceInjectStage("after apply-pending-options");
+      logInjectProbeStep("after apply-pending-options");
+    } else {
+      traceInjectStage("after apply-pending-options-deferred-to-present");
+      logInjectProbeStep("after apply-pending-options-deferred-to-present");
+    }
 
     // Update stats
     logInjectProbeStep("before update-metrics");
@@ -1151,6 +1173,28 @@ namespace dxvk {
     // Sync any pending work with geometry processing threads
     if (drawCallState.finalizePendingFutures(lastCamera, !m_isD3D11Remix)) {
       drawCallState.remixDebugCommitStage = 2;
+
+      const bool dx11FusedObjectToViewOnly = m_isD3D11Remix
+       && isIdentityExact(drawCallState.getTransformData().worldToView)
+       && !isIdentityExact(drawCallState.getTransformData().objectToView)
+       && drawCallState.getTransformData().objectToWorld == drawCallState.getTransformData().objectToView;
+
+      if (m_isD3D11Remix
+       && lastCamera != nullptr
+       && isIdentityExact(drawCallState.getTransformData().worldToView)
+       && !isIdentityExact(drawCallState.getTransformData().objectToView)) {
+        // DX11 currently infers a fused object-to-view transform. Recover a
+        // stable world/object split before camera heuristics run.
+        transformData.objectToWorld = lastCamera->getViewToWorld(false) * drawCallState.getTransformData().objectToView;
+        transformData.worldToView = lastCamera->getWorldToView(false);
+      }
+
+      if (dx11FusedObjectToViewOnly) {
+        // Let camera detection treat DX11's fused object-to-view inference as a
+        // camera candidate instead of rejecting it as pre-combined world/view.
+        transformData.objectToWorld = Matrix4();
+      }
+
       drawCallState.cameraType = cameraManager.processCameraData(drawCallState);
       drawCallState.remixDebugCommitStage = 3;
 
