@@ -224,14 +224,6 @@ namespace {
 }
 
 namespace dxvk {
-
-  void D3D11EarlyTrace(const char* message) {
-    if (!g_enableEarlyTrace)
-      return;
-
-    EarlyTraceImpl(message);
-  }
-
 }
   
 extern "C" {

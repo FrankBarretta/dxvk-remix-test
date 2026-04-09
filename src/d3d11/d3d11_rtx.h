@@ -72,6 +72,8 @@ namespace dxvk {
 
     void NotifyUiOptionRefreshRequested();
 
+    uint64_t GetCurrentReflexFrameId();
+
     void NotifyDraw(const DrawContext& drawContext);
 
         void CommitGeometryToRT(

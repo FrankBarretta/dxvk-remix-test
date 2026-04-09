@@ -412,6 +412,11 @@ namespace dxvk {
       && m_reflexFrameId <= lastAuxiliaryUiOptionRefreshFrame + kAuxiliaryUiInteractiveCaptureFrameWindow;
   }
 
+  uint64_t D3D11Rtx::GetCurrentReflexFrameId() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_reflexFrameId;
+  }
+
   bool D3D11Rtx::HasRtxExecutionContext() const {
     return m_parent->UsesImmediateContextRtx() || m_rtxCsThread != nullptr;
   }
@@ -742,7 +747,9 @@ namespace dxvk {
         && m_reflexFrameId <= lastAuxiliaryUiOptionRefreshFrame + kAuxiliaryUiInteractiveCaptureFrameWindow;
       const bool auxiliaryUiInteractiveCaptureMode = usingAuxiliaryPilot
         && auxiliaryInjectRtxProbeCompleted
-        && (RtxOptionManager::hasPendingChanges() || auxiliaryUiRecentlyRequestedRefresh);
+        && (RtxOptions::showUI() != UIType::None
+          || RtxOptionManager::hasPendingChanges()
+          || auxiliaryUiRecentlyRequestedRefresh);
     // NV-DXVK end
     const uint32_t successfulPilotCaptures = m_auxiliaryPilotSuccessfulCaptures.load(std::memory_order_relaxed);
     const uint32_t maxSuccessfulPilotCaptures = static_cast<uint32_t>(std::max(0, m_parent->GetOptions()->remixPilotMaxSuccessfulCaptures));
@@ -1277,7 +1284,7 @@ namespace dxvk {
     const bool useAuxiliaryInjectRtxAfterProbe = useAuxiliaryFullEndFrameAfterProbe
       && m_parent->GetOptions()->remixPilotEnableInjectRtxAfterProbe;
     const bool auxiliaryUiContinuousInjectRequested = useAuxiliaryInjectRtxAfterProbe
-      && WasUiOptionRefreshRequestedRecently();
+      && (RtxOptions::showUI() != UIType::None || WasUiOptionRefreshRequestedRecently());
     const bool shouldRunAuxiliaryInjectRtxAfterProbe = useAuxiliaryInjectRtxAfterProbe
       && (auxiliaryUiContinuousInjectRequested
         || (m_lastAuxiliaryPilotCaptureFrame != UINT64_MAX

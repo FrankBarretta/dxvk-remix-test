@@ -517,7 +517,7 @@ namespace dxvk {
       && m_parent->RTX().WasUiOptionRefreshRequestedRecently();
     const bool auxiliaryUiRefreshRequested = isAuxiliaryRemixPath
       && auxiliaryInjectRtxProbeCompleted
-      && auxiliaryUiRecentlyRequestedRefresh;
+      && (RtxOptions::showUI() != UIType::None || auxiliaryUiRecentlyRequestedRefresh);
     const bool auxiliaryOptionRefreshRequested = isAuxiliaryRemixPath
       && auxiliaryInjectRtxProbeCompleted
       && RtxOptionManager::hasPendingChanges();
@@ -719,6 +719,13 @@ namespace dxvk {
     bool                    incrementPresentCount) {
     D3D11EarlyTrace("D3D11SwapChain::SubmitPresent enter");
 
+    const bool useReflexPresentMarkers = incrementPresentCount
+      && m_parent->GetOptions()->enableRemix
+      && m_parent->RTX().CanUseRtxExecutionContext();
+    const uint64_t currentReflexFrameId = useReflexPresentMarkers
+      ? m_parent->RTX().GetCurrentReflexFrameId()
+      : 0u;
+
     auto lock = pContext->LockContext();
 
     // Present from CS thread so that we don't
@@ -735,7 +742,7 @@ namespace dxvk {
       D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix after submitCommandList");
 
       D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix before presentImage");
-      m_device->presentImage(0u, false, ImageIndex, m_presenter, &m_presentStatus, incrementPresentCount);
+      m_device->presentImage(currentReflexFrameId, useReflexPresentMarkers, ImageIndex, m_presenter, &m_presentStatus, incrementPresentCount);
       D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix after presentImage");
       return;
     }
@@ -746,6 +753,8 @@ namespace dxvk {
       cImageIndex  = ImageIndex,
       cSync        = Sync,
       cIncrementPresentCount = incrementPresentCount,
+      cUseReflexPresentMarkers = useReflexPresentMarkers,
+      cCurrentReflexFrameId = currentReflexFrameId,
       cCommandList = m_context->endRecording()
     ] (DxvkContext* ctx) {
       D3D11EarlyTrace("D3D11SwapChain::SubmitPresent CS begin");
@@ -764,7 +773,7 @@ namespace dxvk {
       }
 
       D3D11EarlyTrace("D3D11SwapChain::SubmitPresent before presentImage");
-      m_device->presentImage(0u, false, cImageIndex, m_presenter, &m_presentStatus, cIncrementPresentCount);
+      m_device->presentImage(cCurrentReflexFrameId, cUseReflexPresentMarkers, cImageIndex, m_presenter, &m_presentStatus, cIncrementPresentCount);
       D3D11EarlyTrace("D3D11SwapChain::SubmitPresent after presentImage");
 
       D3D11EarlyTrace("D3D11SwapChain::SubmitPresent CS complete");

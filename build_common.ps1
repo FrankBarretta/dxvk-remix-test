@@ -37,11 +37,16 @@ Write-Host "vswhere found at: $vsWhere" -ForegroundColor Yellow
 #
 # Get path to Visual Studio installation using vswhere.
 #
-$vsPath = &$vsWhere -latest -version "[16.0,18.0)" -products * `
+$vsPath = &$vsWhere -latest -version "[16.0,19.0)" -products * `
  -requires Microsoft.Component.MSBuild `
  -property installationPath
+
 If ([string]::IsNullOrEmpty("$vsPath")) {
-  Write-Error "Failed to find Visual Studio 2019 installation. Aborting." -ErrorAction Stop
+  $vsPath = &$vsWhere -latest -version "[16.0,19.0)" -products * `
+   -property installationPath
+}
+If ([string]::IsNullOrEmpty("$vsPath")) {
+  Write-Error "Failed to find a supported Visual Studio installation (2019-2026). Aborting." -ErrorAction Stop
 }
 Write-Host "Using Visual Studio installation at: ${vsPath}" -ForegroundColor Yellow
 

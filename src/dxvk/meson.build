@@ -166,6 +166,7 @@ dxvk_src = files([
   'dxvk_stats.h',
   'dxvk_swapchain_blitter.cpp',
   'dxvk_swapchain_blitter.h',
+  'dxvk_trace.cpp',
   'dxvk_unbound.cpp',
   'dxvk_unbound.h',
   'dxvk_util.cpp',
