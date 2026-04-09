@@ -225,7 +225,12 @@ namespace dxvk {
       case D3D11_USAGE_DEFAULT:
         memoryFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-        if ((m_desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER) || m_desc.CPUAccessFlags) {
+        // NV-DXVK start: RTX Remix needs CPU mapping of Geometry buffers to compute hashes.
+        // If they are DEFAULT usage without CPU access, mapPtr() returns nullptr, and Remix
+        // fails to compute hashes, disabling geometry capture. We force HOST_VISIBLE here.
+        if ((m_desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER) || m_desc.CPUAccessFlags ||
+            (m_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))) {
+        // NV-DXVK end
           memoryFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
                       |  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         }

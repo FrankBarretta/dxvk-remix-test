@@ -1445,51 +1445,57 @@ namespace dxvk {
     }
     // NV-DXVK end
 
-    // NV-DXVK start: Improved PS SRV selection for material textures.
+    // NV-DXVK start: Improved SRV selection for material textures.
     // The original code blindly took the first non-null PS SRV which in DX11
-    // games is often a shadow map, depth buffer, or noise texture — not the
-    // diffuse/albedo.  We now prefer 2D textures with a standard color format
-    // and skip resources that look like depth or stencil buffers.
+    // games is often a shadow map, depth buffer, or noise texture. We now prefer 2D
+    // textures with a standard color format from both PS and VS, and skip
+    // resources that look like depth or stencil buffers.
     {
       Rc<DxvkImageView> bestCandidate = nullptr;
       int bestScore = -1;
 
-      for (const auto& shaderResourceView : context->m_state.ps.shaderResources.views) {
-        if (shaderResourceView == nullptr)
-          continue;
+      auto scanViews = [&](const auto& views) {
+        for (const auto& shaderResourceView : views) {
+          if (shaderResourceView == nullptr)
+            continue;
 
-        const Rc<DxvkImageView> imageView = shaderResourceView->GetImageView();
-        if (imageView == nullptr)
-          continue;
+          const Rc<DxvkImageView> imageView = shaderResourceView->GetImageView();
+          if (imageView == nullptr)
+            continue;
 
-        const auto& imageInfo = imageView->image()->info();
-        int score = 0;
+          const auto& imageInfo = imageView->image()->info();
+          int score = 0;
 
-        // Prefer 2D textures over cubemaps, 3D textures, etc.
-        if (imageInfo.type == VK_IMAGE_TYPE_2D)
-          score += 10;
+          // Prefer 2D textures over cubemaps, 3D textures, etc.
+          if (imageInfo.type == VK_IMAGE_TYPE_2D)
+            score += 10;
 
-        // Prefer color formats over depth/stencil.
-        const auto aspectMask = imageView->info().aspect;
-        if ((aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0)
-          score -= 50;
+          // Prefer color formats over depth/stencil.
+          const auto aspectMask = imageView->info().aspect;
+          if ((aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0)
+            score -= 50;
 
-        // Prefer textures with reasonable dimensions (not tiny 1x1 or 1xN buffers).
-        if (imageInfo.extent.width >= 4 && imageInfo.extent.height >= 4)
-          score += 5;
+          // Prefer textures with reasonable dimensions (not tiny 1x1 or 1xN buffers).
+          if (imageInfo.extent.width >= 4 && imageInfo.extent.height >= 4)
+            score += 5;
 
-        // Prefer textures that were created with SAMPLED usage (regular textures)
-        // rather than STORAGE or RENDER_TARGET.
-        if ((imageInfo.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
-          score += 3;
+          // Prefer textures that were created with SAMPLED usage (regular textures)
+          // rather than STORAGE or RENDER_TARGET.
+          if ((imageInfo.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
+            score += 3;
 
-        if (score > bestScore) {
-          bestScore = score;
-          bestCandidate = imageView;
+          if (score > bestScore) {
+            bestScore = score;
+            bestCandidate = imageView;
+          }
         }
-      }
+      };
 
-      if (bestCandidate != nullptr) {
+      scanViews(context->m_state.ps.shaderResources.views);
+      scanViews(context->m_state.vs.shaderResources.views);
+
+      // Only use the candidate if it has a non-negative score (i.e. not heavily penalized as depth/stencil)
+      if (bestCandidate != nullptr && bestScore >= 0) {
         drawCallState.materialData = LegacyMaterialData(TextureRef(bestCandidate), TextureRef(), D3DMATERIAL9 {});
       }
     }
