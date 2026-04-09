@@ -223,6 +223,15 @@ namespace dxvk {
     m_pCap->idStr = hashToString(Capture::nextId++).substr(4, 4);
     m_pCap->bCaptureInstances = m_options.bCaptureInstances;
     m_pCap->bSkyProbeBaked = false;
+    if (ctx->getDevice()->instance()->config().getOption<bool>("d3d11.enableRemix", false)
+     && m_pCap->bCaptureInstances) {
+      const uint32_t kMinDx11CaptureFrames = 8u;
+      if (m_options.numFrames < kMinDx11CaptureFrames) {
+        m_options.numFrames = kMinDx11CaptureFrames;
+        Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "] Expanding DX11 Capture Scene to ",
+          m_options.numFrames, " frames so the pilot can gather more geometry without a single-frame overload."));
+      }
+    }
     Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "] Initializing capture (instances=",
       m_pCap->bCaptureInstances ? "true" : "false", ", frames=", m_options.numFrames, ")."));
     if (m_pCap->bCaptureInstances) {
@@ -555,7 +564,7 @@ namespace dxvk {
     Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Material hash read."));
     Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Reading mesh hash."));
     const XXH64_hash_t meshHash = isD3D11Remix
-      ? XXH64(&rtInstanceId, sizeof(XXH64_hash_t), matHash)
+      ? XXH64(&pBlas, sizeof(pBlas), matHash)
       : pBlas->input.getHash(RtxOptions::geometryAssetHashRule());
     Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Mesh hash read."));
     if (isD3D11Remix) {
@@ -567,15 +576,24 @@ namespace dxvk {
       return;
     }
 
-    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()),
-      "] Resolving material hash ", hashToString(matHash), " and mesh hash ", hashToString(meshHash), "."));
     const LegacyMaterialData& material = pBlas->getMaterialData(matHash);
+    XXH64_hash_t effectiveMatHash = matHash != 0 ? matHash : material.getHash();
+    if (effectiveMatHash == 0) {
+      const D3DMATERIAL9& legacyMaterial = material.getLegacyMaterial();
+      effectiveMatHash = XXH64(&legacyMaterial, sizeof(legacyMaterial), meshHash);
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()),
+        "] DX11 Capture Scene derived a fallback material hash ", hashToString(effectiveMatHash),
+        " from the legacy D3D material because the runtime material hash was zero."));
+    }
+
+    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()),
+      "] Resolving material hash ", hashToString(effectiveMatHash), " and mesh hash ", hashToString(meshHash), "."));
     Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Material resolved."));
 
-    const bool bIsNewMat = (matHash != 0x0) && (m_pCap->materials.count(matHash) == 0);
+    const bool bIsNewMat = effectiveMatHash != 0x0 && (m_pCap->materials.count(effectiveMatHash) == 0);
     if (bIsNewMat) {
       Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Capturing material."));
-      captureMaterial(ctx, material, !rtInstance.surface.alphaState.isFullyOpaque);
+      captureMaterial(ctx, material, !rtInstance.surface.alphaState.isFullyOpaque, effectiveMatHash);
       Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Material captured."));
     }
 
@@ -587,7 +605,7 @@ namespace dxvk {
       if (bIsNewMesh) {
         m_pCap->meshes[meshHash] = std::make_shared<Mesh>();
         m_pCap->meshes[meshHash]->instanceCount = 0;
-        m_pCap->meshes[meshHash]->matHash = matHash;
+        m_pCap->meshes[meshHash]->matHash = effectiveMatHash;
       }
       instanceNum = m_pCap->meshes[meshHash]->instanceCount++;
     }
@@ -604,18 +622,19 @@ namespace dxvk {
     const XXH64_hash_t instanceId = rtInstance.getId();
     Instance& instance = m_pCap->instances[instanceId];
     instance.meshHash = meshHash;
-    instance.matHash = matHash;
+    instance.matHash = effectiveMatHash;
     instance.meshInstNum = instanceNum;
     instance.lssData.firstTime = m_pCap->currentFrameNum;
 
     Logger::debug("[GameCapturer][" + m_pCap->idStr + "][Inst:" + hashToString(instanceId) + "] New");
   }
 
-  void GameCapturer::captureMaterial(const Rc<DxvkContext> ctx, const LegacyMaterialData& materialData, const bool bEnableOpacity) {
+  void GameCapturer::captureMaterial(const Rc<DxvkContext> ctx, const LegacyMaterialData& materialData, const bool bEnableOpacity, XXH64_hash_t materialHashOverride) {
     lss::Material lssMat; // to be populated
 
     // Resolve material name
-    const std::string matName = dxvk::hashToString(materialData.getHash());
+    const XXH64_hash_t materialHash = materialHashOverride != 0 ? materialHashOverride : materialData.getHash();
+    const std::string matName = dxvk::hashToString(materialHash);
     lssMat.matName = matName;
     // Export Textures
     if (const Rc<DxvkImageView>& colorImageView = materialData.getColorTexture().getImageView(); colorImageView != nullptr) {
@@ -644,7 +663,7 @@ namespace dxvk {
     }
 
     // Set populated LSS Material in our cache
-    m_pCap->materials[materialData.getHash()].lssData = lssMat;
+    m_pCap->materials[materialHash].lssData = lssMat;
     Logger::debug("[GameCapturer][" + m_pCap->idStr + "][Mat:" + matName + "] New");
   }
 
@@ -1105,12 +1124,13 @@ namespace dxvk {
                                           CompletedCapture* complete,
                                           const float framesPerSecond) {
       Capture& cap = *pCap;
+      const bool isD3D11Remix = ctx->getDevice()->instance()->config().getOption<bool>("d3d11.enableRemix", false);
       const auto numTexExportsInProgress = m_exporter.getNumExportsInFlights();
       constexpr float kTimePerTexExport = 0.0050f; // Liberally decided by inspection, derived from timed out tests
       const float texExportTimeout = numTexExportsInProgress * kTimePerTexExport;
       m_exporter.waitForAllExportsToComplete(texExportTimeout);
       assert(pState->has<State::PreppingExport>());
-      const auto exportPrep = prepExport(cap, framesPerSecond);
+      const auto exportPrep = prepExport(cap, framesPerSecond, isD3D11Remix);
       pState->set<State::PreppingExport, false>();
       pState->set<State::Exporting, true>();
 
@@ -1142,9 +1162,10 @@ namespace dxvk {
   }
 
   lss::Export GameCapturer::prepExport(const Capture& cap,
-                                             const float framesPerSecond) {
+                                             const float framesPerSecond,
+                                             const bool isD3D11Remix) {
     lss::Export exportPrep;
-    prepExportMetaData(cap, framesPerSecond, exportPrep);
+    prepExportMetaData(cap, framesPerSecond, exportPrep, isD3D11Remix);
     prepExportMaterials(cap, exportPrep);
     prepExportMeshes(cap, exportPrep);
     if (exportPrep.bExportInstanceStage) {
@@ -1166,7 +1187,8 @@ namespace dxvk {
 
   void GameCapturer::prepExportMetaData(const Capture& cap,
                                         const float framesPerSecond,
-                                        lss::Export& exportPrep) {
+                                        lss::Export& exportPrep,
+                                        const bool isD3D11Remix) {
     // Prep meta data
     exportPrep.meta.windowTitle = window::getWindowTitle(cap.hwnd);
     exportPrep.meta.exeName = env::getExeName();
@@ -1186,6 +1208,7 @@ namespace dxvk {
       }
     }
     exportPrep.meta.bCorrectBakedTransforms = false;
+    exportPrep.meta.bSkipCameraExport = isD3D11Remix;
 
     exportPrep.debugId = cap.idStr;
     exportPrep.baseExportPath = BASE_DIR;

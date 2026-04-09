@@ -223,7 +223,7 @@ private:
   void captureDistantLight(const RtDistantLight& rtLight);
   void captureInstances(const Rc<DxvkContext> ctx);
   void newInstance(const Rc<DxvkContext> ctx, const RtInstance& rtInstance);
-  void captureMaterial(const Rc<DxvkContext> ctx, const LegacyMaterialData& materialData, const bool bEnableOpacity);
+  void captureMaterial(const Rc<DxvkContext> ctx, const LegacyMaterialData& materialData, const bool bEnableOpacity, XXH64_hash_t materialHashOverride = 0);
   bool captureMesh(const Rc<DxvkContext> ctx,
                    const XXH64_hash_t currentMeshHash,
                    const BlasEntry& blas,
@@ -271,10 +271,12 @@ private:
   void exportUsd(const Rc<DxvkContext> ctx);
   struct Capture;
   static lss::Export prepExport(const Capture& cap,
-                                const float framesPerSecond);
+                                const float framesPerSecond,
+                                const bool isD3D11Remix);
   static void prepExportMetaData(const Capture& cap,
                                  const float framesPerSecond,
-                                 lss::Export& exportPrep);
+                                 lss::Export& exportPrep,
+                                 const bool isD3D11Remix);
   static void prepExportMaterials(const Capture& cap,
                                   lss::Export& exportPrep);
   static void prepExportMeshes(const Capture& cap,

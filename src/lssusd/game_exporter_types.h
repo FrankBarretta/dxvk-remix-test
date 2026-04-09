@@ -215,6 +215,7 @@ struct Export {
     bool isZUp;
     std::unordered_map<std::string, std::string> renderingSettingsDict;
     bool bCorrectBakedTransforms;
+    bool bSkipCameraExport = false;
   } meta;
   std::string baseExportPath;
   bool bExportInstanceStage;

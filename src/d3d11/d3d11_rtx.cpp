@@ -28,6 +28,7 @@ namespace dxvk {
     constexpr uint32_t kGeometryFaultLogInterval = 256u;
     constexpr uint64_t kAuxiliaryUiInteractiveCaptureFrameWindow = 2u;
     constexpr uint32_t kAuxiliaryUiInteractiveMaxCapturesPerFrame = 4u;
+    constexpr uint32_t kAuxiliaryCaptureSceneMaxCapturesPerFrame = 12u;
 
     struct D3D11RtxResolvedAttribute {
       DxvkVertexAttribute attribute;
@@ -944,7 +945,11 @@ namespace dxvk {
           : configuredPilotCaptureFrameInterval;
       // NV-DXVK start: Keep post-probe baseline capture conservative unless the UI
       // is actively refreshing the scene, otherwise menus can collapse to 1 FPS.
-      const uint32_t interactivePilotMaxCapturesPerFrame = std::min(configuredMaxPilotCapturesPerFrame, kAuxiliaryUiInteractiveMaxCapturesPerFrame);
+      // Capture Scene needs a much larger budget than normal menu interaction or
+      // it exports only a tiny fraction of the DX11 scene.
+      const uint32_t interactivePilotMaxCapturesPerFrame = auxiliaryCaptureSceneRequestedOrActive
+        ? std::min(configuredMaxPilotCapturesPerFrame, kAuxiliaryCaptureSceneMaxCapturesPerFrame)
+        : std::min(configuredMaxPilotCapturesPerFrame, kAuxiliaryUiInteractiveMaxCapturesPerFrame);
       const uint32_t steadyStatePostProbeMaxCapturesPerFrame = 1u;
       // NV-DXVK end
       const uint32_t maxPilotCapturesPerFrame = auxiliaryUiInteractiveCaptureMode
@@ -963,13 +968,17 @@ namespace dxvk {
         ? resolvedDrawContext.indexCount != 0u
         : resolvedDrawContext.vertexCount != 0u;
       // NV-DXVK start: Keep the startup probe on the conservative indexed path,
-      // but allow simple non-indexed triangle draws during the short post-change
-      // refresh window. Logs show these are a smaller subset than instanced
-      // non-indexed draws and are the safest next expansion to test.
+      // allow simple non-indexed triangle draws during the short post-change
+      // refresh window, and allow instanced non-indexed triangle draws only
+      // while Capture Scene is active on DX11.
       const bool pilotDrawIsInteractiveNonIndexed = auxiliaryUiInteractiveCaptureMode
         && !resolvedDrawContext.indexed
         && resolvedDrawContext.instanceCount <= 1u;
-      const bool supportedPilotDraw = (resolvedDrawContext.indexed || pilotDrawIsInteractiveNonIndexed)
+      const bool pilotDrawIsCaptureSceneNonIndexed = auxiliaryCaptureSceneRequestedOrActive
+        && !resolvedDrawContext.indexed;
+      const bool supportedPilotDraw = (resolvedDrawContext.indexed
+        || pilotDrawIsInteractiveNonIndexed
+        || pilotDrawIsCaptureSceneNonIndexed)
         && pilotDrawHasWork
         && pilotDrawIsTriangle;
       // NV-DXVK end

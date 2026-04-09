@@ -69,6 +69,7 @@
 
 #include <algorithm>
 #include <assert.h>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -89,6 +90,17 @@
 #endif
 
 namespace {
+template <typename M>
+bool MatrixIsFinite(const M& matrix) {
+  constexpr size_t numElements = M::numRows * M::numColumns;
+  for (size_t i = 0; i < numElements; i++) {
+    if (!std::isfinite(matrix.data()[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 pxr::VtMatrix4dArray sanitizeBoneXforms(const pxr::VtMatrix4dArray& xforms,
                                         const pxr::VtMatrix4dArray& bindPose,
                                         const lss::Export::Meta& meta) {
@@ -195,22 +207,49 @@ std::string getExtension(std::filesystem::path path) {
 void GameExporter::exportUsdInternal(const Export& exportData) {
   dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Export start");
   ExportContext ctx;
+  dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Preparing embedded MDL assets.");
   lss::GameExporter::createApertureMdls(exportData.baseExportPath);
+  dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Embedded MDL assets ready.");
+  dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Creating instance stage.");
   ctx.instanceStage = (exportData.bExportInstanceStage) ? createInstanceStage(exportData) : pxr::UsdStageRefPtr();
   ctx.extension = (exportData.bExportInstanceStage) ? getExtension(exportData.instanceStagePath) : lss::ext::usd;
+  dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Instance stage ready.");
+  dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId, "] Exporting ",
+    exportData.materials.size(), " materials."));
   exportMaterials(exportData, ctx);
+  dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Materials exported.");
+  dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId, "] Exporting ",
+    exportData.meshes.size(), " meshes."));
   exportMeshes(exportData, ctx);
+  dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Meshes exported.");
+  dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Exporting skeleton data.");
   exportSkeletons(exportData, ctx);
+  dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Skeletons exported.");
   if(ctx.instanceStage) {
+    dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Exporting camera.");
     exportCamera(exportData, ctx);
+    dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Camera exported.");
+    dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId, "] Exporting ",
+      exportData.sphereLights.size(), " sphere lights."));
     exportSphereLights(exportData, ctx);
+    dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Sphere lights exported.");
+    dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId, "] Exporting ",
+      exportData.distantLights.size(), " distant lights."));
     exportDistantLights(exportData, ctx);
+    dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Distant lights exported.");
+    dxvk::Logger::info(dxvk::str::format("[GameExporter][", exportData.debugId, "] Exporting ",
+      exportData.instances.size(), " instances."));
     exportInstances(exportData, ctx);
+    dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Instances exported.");
+    dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Exporting sky.");
     exportSky(exportData, ctx);
+    dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Sky exported.");
     setCommonStageMetaData(ctx.instanceStage, exportData);
     ctx.instanceStage->SetStartTimeCode(exportData.meta.startTimeCode);
     ctx.instanceStage->SetEndTimeCode(exportData.meta.endTimeCode);
+    dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Saving instance stage.");
     ctx.instanceStage->Save();
+    dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Instance stage saved.");
   }
   dxvk::Logger::info("[GameExporter][" + exportData.debugId + "] Export end");
 }
@@ -522,8 +561,13 @@ void GameExporter::exportMeshes(const Export& exportData, ExportContext& ctx) {
   const bool bInvX = (!exportData.camera.view.bInv) && (exportData.camera.proj.bInv || exportData.camera.isLHS());
   const bool bInvY = (!exportData.camera.view.bInv) && exportData.camera.proj.bInv;
   for(const auto& [meshId,mesh] : exportData.meshes) {
-    assert(mesh.numVertices > 0);
-    assert(mesh.numIndices > 0);
+    if (mesh.numVertices == 0 || mesh.numIndices == 0) {
+      dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+        "][exportMeshes] Skipping mesh ", meshId,
+        " because it has invalid counts (vertices=", mesh.numVertices,
+        ", indices=", mesh.numIndices, ")."));
+      continue;
+    }
 
     const bool isSkeleton = mesh.numBones > 0;
 
@@ -852,6 +896,12 @@ void GameExporter::exportInstances(const Export& exportData, ExportContext& ctx)
     assert(instanceXformSchema);
 
     // Attach reference to mesh in question
+    if (ctx.meshReferences.count(instanceData.meshId) == 0) {
+      dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+        "][exportInstances] Skipping instance ", instId,
+        " because mesh reference ", instanceData.meshId, " was not exported."));
+      continue;
+    }
     const Reference& meshLssReference = ctx.meshReferences[instanceData.meshId];
     auto instanceUsdReferences = instanceXformSchema.GetPrim().GetReferences();
     instanceUsdReferences.AddInternalReference(meshLssReference.instanceSdfPath);
@@ -869,10 +919,16 @@ void GameExporter::exportInstances(const Export& exportData, ExportContext& ctx)
 
     if(instanceData.matId != kInvalidId) {
       // Bind material associated with above mesh
+      if (ctx.matReferences.count(instanceData.matId) == 0) {
+        dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+          "][exportInstances] Instance ", instId, " references missing material ",
+          instanceData.matId, "; skipping material binding."));
+      } else {
       const Reference& matLssReference = ctx.matReferences[instanceData.matId];
       const auto shaderMatSchema = pxr::UsdShadeMaterial::Get(ctx.instanceStage, matLssReference.instanceSdfPath);
       assert(shaderMatSchema);
       pxr::UsdShadeMaterialBindingAPI(instanceXformSchema.GetPrim()).Bind(shaderMatSchema);
+      }
     }
 
     if (isSkeleton) {
@@ -936,13 +992,46 @@ void GameExporter::exportInstances(const Export& exportData, ExportContext& ctx)
 void GameExporter::exportCamera(const Export& exportData, ExportContext& ctx) {
   dxvk::Logger::debug("[GameExporter][" + exportData.debugId + "][exportCamera] Begin");
 
+  if (exportData.meta.bSkipCameraExport) {
+    dxvk::Logger::warn("[GameExporter][" + exportData.debugId + "][exportCamera] Skipping camera export for the current DX11 Capture Scene path to avoid the known camera export crash.");
+    return;
+  }
+
   auto gRootCamerasPath = gRootNodePath.AppendChild(kTokCameras);
 
   static const pxr::TfToken kTokCamera("Camera");
   const pxr::SdfPath cameraSdfPath = gRootCamerasPath.AppendChild(kTokCamera);
   auto geomCamera = pxr::UsdGeomCamera::Define(ctx.instanceStage, cameraSdfPath);
 
+  const bool bValidAspect = std::isfinite(exportData.camera.aspectRatio) && exportData.camera.aspectRatio > 0.0001f;
+  const bool bValidFov = std::isfinite(exportData.camera.fov) && exportData.camera.fov > 0.0001f && exportData.camera.fov < static_cast<float>(M_PI);
+  const bool bValidNear = std::isfinite(exportData.camera.nearPlane) && exportData.camera.nearPlane > 0.0f;
+  const bool bValidFar = std::isfinite(exportData.camera.farPlane) && exportData.camera.farPlane > exportData.camera.nearPlane;
+
+  if (!bValidAspect || !bValidFov || !bValidNear || !bValidFar) {
+    dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+      "][exportCamera] Skipping camera export because the camera parameters are invalid. aspect=",
+      exportData.camera.aspectRatio, ", fov=", exportData.camera.fov,
+      ", near=", exportData.camera.nearPlane, ", far=", exportData.camera.farPlane, "."));
+    return;
+  }
+
+  if (exportData.camera.xforms.empty()) {
+    dxvk::Logger::warn("[GameExporter][" + exportData.debugId + "][exportCamera] Skipping camera export because there are no sampled camera transforms.");
+    return;
+  }
+
+  for (const auto& sample : exportData.camera.xforms) {
+    if (!std::isfinite(sample.time) || !MatrixIsFinite(sample.xform)) {
+      dxvk::Logger::warn(dxvk::str::format("[GameExporter][", exportData.debugId,
+        "][exportCamera] Skipping camera export because a sampled camera transform is invalid. time=",
+        sample.time, "."));
+      return;
+    }
+  }
+
   // Create Gf Camera which will convert FOV + Aspect Ratio -> Usd Camera Attributes
+  dxvk::Logger::debug("[GameExporter][" + exportData.debugId + "][exportCamera] Camera parameters validated.");
   pxr::GfCamera simpleCam;
   simpleCam.SetPerspectiveFromAspectRatioAndFieldOfView(
     exportData.camera.aspectRatio,
@@ -962,6 +1051,7 @@ void GameExporter::exportCamera(const Export& exportData, ExportContext& ctx) {
   // Set clipping range
   auto clippingPlane = geomCamera.CreateClippingRangeAttr();
   clippingPlane.Set(pxr::GfVec2f(exportData.camera.nearPlane, exportData.camera.farPlane));
+  dxvk::Logger::debug("[GameExporter][" + exportData.debugId + "][exportCamera] Camera optics authored.");
 
   // Camera position needs to be adjusted if we're visually correcting baked transforms
   pxr::GfMatrix4d commonXform{1.0};
@@ -974,6 +1064,7 @@ void GameExporter::exportCamera(const Export& exportData, ExportContext& ctx) {
   setTimeSampledXforms(ctx.instanceStage, cameraSdfPath,
                        exportData.camera.firstTime, exportData.camera.finalTime, exportData.camera.xforms,
                        exportData.meta, false, commonXform);
+  dxvk::Logger::debug("[GameExporter][" + exportData.debugId + "][exportCamera] Camera transforms authored.");
 
   // Must modify here, since there may be existing data set earlier
   pxr::VtDictionary customLayerData = ctx.instanceStage->GetRootLayer()->GetCustomLayerData();
@@ -1167,12 +1258,21 @@ void GameExporter::setTimeSampledXforms(const pxr::UsdStageRefPtr stage,
                                         const pxr::GfMatrix4d& commonXform) {
   assert(stage);
   assert(sdfPath != pxr::SdfPath());
-  assert(xforms.size() > 0);
+  if (xforms.empty()) {
+    dxvk::Logger::warn(dxvk::str::format("[GameExporter] Skipping xform export for ", sdfPath.GetString(),
+      " because no sampled transforms were captured."));
+    return;
+  }
 
   const bool isSingleFrame = meta.numFramesCaptured == 1;
 
   auto geomXformable = pxr::UsdGeomXformable::Get(stage, sdfPath);
   for(const auto& sampledXform : xforms) {
+    if (!std::isfinite(sampledXform.time)) {
+      dxvk::Logger::warn(dxvk::str::format("[GameExporter] Skipping an invalid xform sample for ",
+        sdfPath.GetString(), " because the time code is not finite."));
+      continue;
+    }
     const pxr::UsdTimeCode timeCode = isSingleFrame ? pxr::UsdTimeCode::Default() : pxr::UsdTimeCode(sampledXform.time);
 
     auto xform = sampledXform.xform;
