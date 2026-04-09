@@ -512,6 +512,8 @@ namespace dxvk {
       && !m_parent->UsesImmediateContextRtx()
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms();
+    const bool auxiliaryCaptureSceneRequestedOrActive = isAuxiliaryRemixPath
+      && m_device->getCommon()->capturer()->hasPendingOrActiveCapture();
     // NV-DXVK start: Allow a very short post-apply refresh window so DX11 menu
     // changes can rebuild enough scene state to become visible, without keeping
     // the auxiliary path hot just because the UI is open.
@@ -545,8 +547,10 @@ namespace dxvk {
       && m_parent->GetOptions()->remixPilotEnableSceneCaptureEndFrame
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms()
-      && !auxiliaryInjectRtxProbeCompleted
-      && m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame();
+      && ((!auxiliaryInjectRtxProbeCompleted
+          && m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame())
+        || (auxiliaryInjectRtxProbeCompleted
+          && auxiliaryCaptureSceneRequestedOrActive));
 
     const bool useAuxiliaryFullEndFrameAfterProbe = remixEnabled
       && !m_parent->UsesImmediateContextRtx()
@@ -554,10 +558,12 @@ namespace dxvk {
       && m_parent->RTX().CanUseRtxExecutionContext()
       && m_parent->RTX().HasSeenRequiredTransforms()
       && auxiliaryInjectRtxProbeCompleted
-      && (auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested);
+      && (auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested)
+      && !auxiliaryCaptureSceneRequestedOrActive;
     const bool useAuxiliaryInjectRtxAfterProbe = useAuxiliaryFullEndFrameAfterProbe
       && m_parent->GetOptions()->remixPilotEnableInjectRtxAfterProbe
-      && (auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested);
+      && (auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested)
+      && !auxiliaryCaptureSceneRequestedOrActive;
 
     const bool useAuxiliaryResetScreenResolution = (useAuxiliarySceneCaptureEndFrame || useAuxiliaryFullEndFrameAfterProbe)
       && m_parent->GetOptions()->remixPilotEnableResetScreenResolution;

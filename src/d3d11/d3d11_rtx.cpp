@@ -781,11 +781,13 @@ namespace dxvk {
       && m_parent->GetOptions()->remixPilotEnableInjectRtx
       && std::max(0, m_parent->GetOptions()->remixPilotInjectRtxStageLimit) > 0;
     const bool auxiliaryInjectRtxProbeCompleted = m_auxiliaryInjectRtxProbeCompleted.load(std::memory_order_relaxed);
+    const bool auxiliaryCaptureSceneRequestedOrActive = usingAuxiliaryPilot
+      && m_parent->GetDXVKDevice()->getCommon()->capturer()->hasPendingOrActiveCapture();
     // NV-DXVK start: Treat the auxiliary injectRTX probe as active only until it succeeds once
       const bool auxiliaryInjectRtxProbeStillPending = usingAuxiliaryInjectRtxProbe && !auxiliaryInjectRtxProbeCompleted;
       const bool auxiliaryUiInteractiveCaptureMode = usingAuxiliaryPilot
         && auxiliaryInjectRtxProbeCompleted
-        && WasUiOptionRefreshRequestedRecently();
+        && (WasUiOptionRefreshRequestedRecently() || auxiliaryCaptureSceneRequestedOrActive);
     // NV-DXVK end
     const uint32_t successfulPilotCaptures = m_auxiliaryPilotSuccessfulCaptures.load(std::memory_order_relaxed);
     const uint32_t maxSuccessfulPilotCaptures = static_cast<uint32_t>(std::max(0, m_parent->GetOptions()->remixPilotMaxSuccessfulCaptures));
@@ -1377,6 +1379,8 @@ namespace dxvk {
     const bool useAuxiliaryInjectRtxRequested = auxiliaryFullEndFrameRequested
       && m_parent->GetOptions()->remixPilotEnableInjectRtx;
     const bool auxiliaryInjectRtxProbeAlreadyCompleted = m_auxiliaryInjectRtxProbeCompleted.load(std::memory_order_relaxed);
+    const bool auxiliaryCaptureSceneRequestedOrActive = useAuxiliarySceneCaptureOnly
+      && m_parent->GetDXVKDevice()->getCommon()->capturer()->hasPendingOrActiveCapture();
     const bool useAuxiliaryInjectRtxProbe = useAuxiliaryInjectRtxRequested
       && !auxiliaryInjectRtxProbeAlreadyCompleted
       && auxiliaryInjectRtxStageLimit > 0u;

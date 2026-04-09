@@ -85,6 +85,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <optional>
 
 namespace dxvk 
 {
@@ -122,6 +123,12 @@ public:
   void triggerNewCapture() {
     m_bTriggerCapture = true;
   }
+
+  void triggerNewCaptureWithInstances(const bool captureInstances, std::optional<std::string> instanceStageNameOverride = std::nullopt) {
+    m_nextCaptureInstancesOverride = captureInstances;
+    m_nextInstanceStageNameOverride = std::move(instanceStageNameOverride);
+    m_bTriggerCapture = true;
+  }
   
   // Instance Flags
   enum class InstFlag : uint8_t {
@@ -147,13 +154,21 @@ public:
   bool isIdle() const {
     return m_state.isClear() || m_state.has<State::Complete>();
   }
+  bool hasPendingOrActiveCapture() const {
+    return m_bTriggerCapture || m_waitingForSafeFrameStart || !isIdle();
+  }
 
   struct CompletedCapture {
     std::string stageName;
     std::string stagePath;
+    bool captureInstances = true;
   } m_completeCapture;
   const CompletedCapture& queryCompleteCapture() const {
     return m_completeCapture;
+  }
+
+  bool isCurrentOrLastCaptureInstanceCapture() const {
+    return m_pCap != nullptr ? m_pCap->bCaptureInstances : m_completeCapture.captureInstances;
   }
 
   static std::string getCaptureInstanceStageNameWithTimestamp();
@@ -202,14 +217,14 @@ private:
   void prepareInstanceStage(const Rc<DxvkContext> ctx);
   void capture(const Rc<DxvkContext> ctx, const float frameTimeMilliseconds);
   void captureFrame(const Rc<DxvkContext> ctx);
-  void captureCamera();
+  bool captureCamera();
   void captureLights();
   void captureSphereLight(const dxvk::RtSphereLight& rtLight);
   void captureDistantLight(const RtDistantLight& rtLight);
   void captureInstances(const Rc<DxvkContext> ctx);
   void newInstance(const Rc<DxvkContext> ctx, const RtInstance& rtInstance);
   void captureMaterial(const Rc<DxvkContext> ctx, const LegacyMaterialData& materialData, const bool bEnableOpacity);
-  void captureMesh(const Rc<DxvkContext> ctx,
+  bool captureMesh(const Rc<DxvkContext> ctx,
                    const XXH64_hash_t currentMeshHash,
                    const BlasEntry& blas,
                    const CategoryFlags& flags,
@@ -309,6 +324,9 @@ private:
 
   // State
   bool m_bTriggerCapture = false;
+  bool m_waitingForSafeFrameStart = false;
+  std::optional<bool> m_nextCaptureInstancesOverride;
+  std::optional<std::string> m_nextInstanceStageNameOverride;
   State m_state;
 
   // Handles

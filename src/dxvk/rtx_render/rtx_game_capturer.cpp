@@ -106,6 +106,29 @@ namespace dxvk {
       const std::string bakedSkyProbeSuffix("_T_SkyProbe" + lss::ext::dds);
       return captureName + bakedSkyProbeSuffix;
     }
+
+    bool isSupportedCapturePositionFormat(const VkFormat format) {
+      return format == VK_FORMAT_R32G32B32_SFLOAT
+          || format == VK_FORMAT_R32G32B32A32_SFLOAT;
+    }
+
+    bool isSupportedCaptureNormalFormat(const VkFormat format) {
+      return format == VK_FORMAT_R32G32B32_SFLOAT;
+    }
+
+    bool isSupportedCaptureTexcoordFormat(const VkFormat format) {
+      return format == VK_FORMAT_R32G32_SFLOAT
+          || format == VK_FORMAT_R32G32B32_SFLOAT;
+    }
+
+    bool isSupportedCaptureColorFormat(const VkFormat format) {
+      return format == VK_FORMAT_B8G8R8A8_UNORM;
+    }
+
+    bool isSupportedCaptureIndexType(const VkIndexType indexType) {
+      return indexType == VK_INDEX_TYPE_UINT16
+          || indexType == VK_INDEX_TYPE_UINT32;
+    }
   }
 
   // For capture tests, we cannot include the config data because it may contain paths/settings which are respective to the users PC.
@@ -134,6 +157,16 @@ namespace dxvk {
   }
 
   void GameCapturer::step(const Rc<DxvkContext> ctx, const HWND hwnd) {
+    // NV-DXVK start: Defer DX11 capture initialization to the frame after the UI click.
+    if (m_waitingForSafeFrameStart) {
+      m_waitingForSafeFrameStart = false;
+
+      if (isIdle()) {
+        m_state.set<State::Initializing, true>();
+      }
+    }
+    // NV-DXVK end
+
     trigger(ctx);
     if(m_state.has<State::Initializing>()) {
       initCapture(ctx, hwnd);
@@ -159,10 +192,12 @@ namespace dxvk {
       if(isIdle()) {
         if (RtxOptions::getEnableAnyReplacements() && m_sceneManager.areAllReplacementsLoaded()) {
           Logger::warn("[GameCapturer] Cannot begin capture when replacement assets are enabled/loaded.");
-        } else if (m_pDevice->instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
-          Logger::warn("[GameCapturer] Capture Scene is temporarily disabled on the experimental DX11 Remix path because starting a USD capture currently destabilizes the auxiliary pipeline.");
         } else if (m_state.has<State::Capturing>()) {
           Logger::warn("[GameCapturer] Cannot begin new capture, one currently in progress.");
+        // NV-DXVK start: On DX11 Remix, delay capture start until the next frame so the
+        // swapchain can route through scene-capture-only instead of the current full endFrame.
+        } else if (ctx->getDevice()->instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
+          m_waitingForSafeFrameStart = true;
         } else {
           m_state.set<State::Initializing, true>();
         }
@@ -175,13 +210,25 @@ namespace dxvk {
     assert(!m_state.has<State::Capturing>());
     
     m_options = getOptions();
+    if (m_nextCaptureInstancesOverride.has_value()) {
+      m_options.bCaptureInstances = *m_nextCaptureInstancesOverride;
+      m_nextCaptureInstancesOverride.reset();
+    }
+    if (m_nextInstanceStageNameOverride.has_value()) {
+      m_options.instanceStageName = std::move(*m_nextInstanceStageNameOverride);
+      m_nextInstanceStageNameOverride.reset();
+    }
     
     m_pCap = std::make_unique<Capture>();
     m_pCap->idStr = hashToString(Capture::nextId++).substr(4, 4);
     m_pCap->bCaptureInstances = m_options.bCaptureInstances;
     m_pCap->bSkyProbeBaked = false;
+    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "] Initializing capture (instances=",
+      m_pCap->bCaptureInstances ? "true" : "false", ", frames=", m_options.numFrames, ")."));
     if (m_pCap->bCaptureInstances) {
+      Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "] Preparing instance stage."));
       prepareInstanceStage(ctx);
+      Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "] Instance stage prepared."));
     }
     Logger::info("[GameCapturer][" + m_pCap->idStr + "] New capture");
     m_pCap->instanceFlags.clear();
@@ -199,13 +246,20 @@ namespace dxvk {
     const auto dedupedFileName =  std::filesystem::path(stagePathStr).stem().string();
     m_pCap->instance.stageName = dedupedFileName;
     m_pCap->instance.stagePath = stagePathStr;
-    m_exporter.generateSceneThumbnail(ctx, BASE_DIR + lss::commonDirName::thumbDir, dedupedFileName);
+    // NV-DXVK start: DX11 Capture Scene does not have a stable RTX final output when the
+    // capturer is initialized, so skip thumbnail generation to avoid crashing in exportImage.
+    if (!ctx->getDevice()->instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
+      m_exporter.generateSceneThumbnail(ctx, BASE_DIR + lss::commonDirName::thumbDir, dedupedFileName);
+    }
+    // NV-DXVK end
   }
 
   void GameCapturer::capture(const Rc<DxvkContext> ctx, const float frameTimeMilliseconds) {
     assert(m_state.has<State::Capturing>());
 
     m_pCap->currentFrameNum += (frameTimeMilliseconds * 0.001f) * static_cast<float>(m_options.fps);
+    Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "] Capturing frame ",
+      m_pCap->numFramesCaptured + 1, "/", m_options.numFrames, "."));
     captureFrame(ctx);
 
     if (m_pCap->numFramesCaptured >= m_options.numFrames) {
@@ -215,17 +269,35 @@ namespace dxvk {
   }
 
   void GameCapturer::captureFrame(const Rc<DxvkContext> ctx) {
-    Logger::debug("[GameCapturer][" + m_pCap->idStr + "] Begin frame capture");
+    Logger::info("[GameCapturer][" + m_pCap->idStr + "] Begin frame capture");
     if (m_pCap->bCaptureInstances) {
-      captureCamera();
-      captureLights();
+      const bool isD3D11Remix = ctx->getDevice()->instance()->config().getOption<bool>("d3d11.enableRemix", false);
+      const auto& sceneCamera = m_sceneManager.getCamera();
+
+      if (isD3D11Remix && !sceneCamera.isValid(m_pDevice->getCurrentFrameId())) {
+        Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "] DX11 capture is missing a valid camera. Falling back to asset-only capture for this request."));
+        m_pCap->bCaptureInstances = false;
+      } else {
+        if (!captureCamera()) {
+          Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "] DX11 capture produced an invalid camera projection. Falling back to asset-only capture for this request."));
+          m_pCap->bCaptureInstances = false;
+        } else {
+          Logger::info("[GameCapturer][" + m_pCap->idStr + "] Camera captured");
+          captureLights();
+          Logger::info("[GameCapturer][" + m_pCap->idStr + "] Lights captured");
+          if (isD3D11Remix) {
+            Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "] DX11 Capture Scene is temporarily exporting asset-only data after camera/lights to avoid the current instance export crash."));
+            m_pCap->bCaptureInstances = false;
+          }
+        }
+      }
     }
     captureInstances(ctx);
     ++m_pCap->numFramesCaptured;
-    Logger::debug("[GameCapturer][" + m_pCap->idStr + "] End frame capture");
+    Logger::info("[GameCapturer][" + m_pCap->idStr + "] End frame capture");
   }
 
-  void GameCapturer::captureCamera() {
+  bool GameCapturer::captureCamera() {
     auto& sceneCamera = m_sceneManager.getCamera();
     auto& capCamera = m_pCap->camera; // Convenience for captured camera
     if (isnan(capCamera.firstTime)) {
@@ -267,10 +339,17 @@ namespace dxvk {
       // Set first frame time (should be 0.f)
       capCamera.firstTime = m_pCap->currentFrameNum;
     }
-    assert(!isnan(capCamera.fov));
-    assert(!isnan(capCamera.aspectRatio));
-    assert(!isnan(capCamera.nearPlane));
-    assert(!isnan(capCamera.farPlane));
+    if (std::isnan(capCamera.fov) || std::isinf(capCamera.fov) ||
+        std::isnan(capCamera.aspectRatio) || std::isinf(capCamera.aspectRatio) ||
+        std::isnan(capCamera.nearPlane) || std::isinf(capCamera.nearPlane) ||
+        std::isnan(capCamera.farPlane) || std::isinf(capCamera.farPlane) ||
+        capCamera.aspectRatio <= 0.0f ||
+        capCamera.fov <= 0.0f ||
+        capCamera.farPlane <= 0.0f) {
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Camera] Invalid camera parameters detected: fov=",
+        capCamera.fov, ", aspect=", capCamera.aspectRatio, ", near=", capCamera.nearPlane, ", far=", capCamera.farPlane, "."));
+      return false;
+    }
     capCamera.finalTime = m_pCap->currentFrameNum;
 
     // Step 3: Construct capture Camera
@@ -299,6 +378,7 @@ namespace dxvk {
     worldToView.SetLookAt(position, position + direction, up);
     worldToView.Orthonormalize();
     capCamera.xforms.push_back({ m_pCap->currentFrameNum, worldToView.GetInverse() });
+    return true;
   }
 
   void GameCapturer::captureLights() {
@@ -313,17 +393,14 @@ namespace dxvk {
       case RtLightType::Rect:
         // Todo: Handle Rect lights
         Logger::err("[GameCapturer][" + m_pCap->idStr + "] RectLight not implemented");
-        assert(false);
         break;
       case RtLightType::Disk:
         // Todo: Handle Disk lights
         Logger::err("[GameCapturer][" + m_pCap->idStr + "] DiskLight not implemented");
-        assert(false);
         break;
       case RtLightType::Cylinder:
         // Todo: Handle Cylinder lights
         Logger::err("[GameCapturer][" + m_pCap->idStr + "] CylinderLight not implemented");
-        assert(false);
         break;
       case RtLightType::Distant:
         captureDistantLight(rtLight.getDistantLight());
@@ -387,8 +464,16 @@ namespace dxvk {
   }
 
   void GameCapturer::captureInstances(const Rc<DxvkContext> ctx) {
+    if (!m_pCap->bCaptureInstances) {
+      Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "] Skipping instance export for this capture."));
+      return;
+    }
+
     for (const RtInstance* pRtInstance : m_sceneManager.getInstanceTable()) {
-      assert(pRtInstance->getBlas() != nullptr);
+      if (pRtInstance == nullptr || pRtInstance->getBlas() == nullptr) {
+        Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "] Skipping instance capture because the scene instance has no BLAS."));
+        continue;
+      }
 
       const XXH64_hash_t instanceId = pRtInstance->getId();
       if (instanceId == UINT64_MAX) {
@@ -396,14 +481,19 @@ namespace dxvk {
         // passes, rather than representing real entities that we want captured
         continue;
       }
-      assert(instanceId != UINT64_MAX);
 
       if (pRtInstance->getBlas()->input.cameraType == CameraType::Sky) {
         if (!m_pCap->bSkyProbeBaked) {
-          const std::string skyProbeFilename = getBakedSkyProbeName(m_pCap->instance.stageName);
-          m_exporter.bakeSkyProbe(ctx, BASE_DIR + lss::commonDirName::texDir, skyProbeFilename);
+          // NV-DXVK start: DX11 capture path does not have stable sky probe export yet.
+          if (!ctx->getDevice()->instance()->config().getOption<bool>("d3d11.enableRemix", false)) {
+            const std::string skyProbeFilename = getBakedSkyProbeName(m_pCap->instance.stageName);
+            m_exporter.bakeSkyProbe(ctx, BASE_DIR + lss::commonDirName::texDir, skyProbeFilename);
+            Logger::debug("[GameCapturer][" + m_pCap->idStr + "][SkyProbe] Bake scheduled to " + skyProbeFilename);
+          } else {
+            Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][SkyProbe] Skipping sky probe bake on DX11 Capture Scene."));
+          }
           m_pCap->bSkyProbeBaked = true;
-          Logger::debug("[GameCapturer][" + m_pCap->idStr + "][SkyProbe] Bake scheduled to " + skyProbeFilename);
+          // NV-DXVK end
         }
       }
 
@@ -415,13 +505,17 @@ namespace dxvk {
       const bool bXformUpdate = checkInstanceUpdateFlag(instanceFlags, InstFlag::XformUpdate);
       Instance& instance = m_pCap->instances[instanceId];
       if (bIsNew) {
+        Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(instanceId), "] Capturing new instance."));
         newInstance(ctx, *pRtInstance);
+        Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(instanceId), "] New instance captured."));
       }
       if (m_pCap->bCaptureInstances && !bIsNew && (bPointsUpdate || bNormalsUpdate || bIndexUpdate)) {
         const BlasEntry* pBlas = pRtInstance->getBlas();
-        assert(pBlas != nullptr);
-
-        captureMesh(ctx, instance.meshHash, *pBlas, pRtInstance->getCategoryFlags(), false, bPointsUpdate, bNormalsUpdate, bIndexUpdate, pRtInstance->isFrontFaceFlipped);
+        if (pBlas == nullptr) {
+          Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(instanceId), "] Skipping mesh update because the instance BLAS is null."));
+        } else {
+          captureMesh(ctx, instance.meshHash, *pBlas, pRtInstance->getCategoryFlags(), false, bPointsUpdate, bNormalsUpdate, bIndexUpdate, pRtInstance->isFrontFaceFlipped);
+        }
       }
       if (m_pCap->bCaptureInstances && (bIsNew || bXformUpdate)) {
         pxr::GfMatrix4d xform { 1.0 };
@@ -445,16 +539,23 @@ namespace dxvk {
       }
       instance.lssData.finalTime = m_pCap->currentFrameNum;
       instance.lssData.isSky = (pRtInstance->getBlas()->input.cameraType == CameraType::Sky);
+      Logger::info(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(instanceId), "] Writing draw metadata."));
       instance.lssData.metadata = createDrawCallMetadata(*pRtInstance);
     }
   }
 
   void GameCapturer::newInstance(const Rc<DxvkContext> ctx, const RtInstance& rtInstance) {
     const BlasEntry* pBlas = rtInstance.getBlas();
-    assert(pBlas != nullptr);
+    if (pBlas == nullptr) {
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Skipping new instance because the BLAS is null."));
+      return;
+    }
     const XXH64_hash_t matHash = rtInstance.getMaterialDataHash();
     const XXH64_hash_t meshHash = pBlas->input.getHash(RtxOptions::geometryAssetHashRule());
-    assert(meshHash != 0);
+    if (meshHash == 0) {
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Inst:", hashToString(rtInstance.getId()), "] Skipping new instance because the mesh hash is zero."));
+      return;
+    }
 
     const LegacyMaterialData& material = pBlas->getMaterialData(matHash);
 
@@ -476,7 +577,11 @@ namespace dxvk {
       instanceNum = m_pCap->meshes[meshHash]->instanceCount++;
     }
     if (bIsNewMesh) {
-      captureMesh(ctx, meshHash, *pBlas, rtInstance.getCategoryFlags(), true, true, true, true, rtInstance.isFrontFaceFlipped);
+      if (!captureMesh(ctx, meshHash, *pBlas, rtInstance.getCategoryFlags(), true, true, true, true, rtInstance.isFrontFaceFlipped)) {
+        std::lock_guard lock(m_meshMutex);
+        m_pCap->meshes.erase(meshHash);
+        return;
+      }
     }
 
     const XXH64_hash_t instanceId = rtInstance.getId();
@@ -496,27 +601,37 @@ namespace dxvk {
     const std::string matName = dxvk::hashToString(materialData.getHash());
     lssMat.matName = matName;
     // Export Textures
-    const std::string albedoTexFilename(matName + lss::ext::dds);
-    m_exporter.dumpImageToFile(ctx, BASE_DIR + lss::commonDirName::texDir,
-                               albedoTexFilename,
-                               materialData.getColorTexture().getImageView()->image());
-    const std::string albedoTexPath = str::format(BASE_DIR + lss::commonDirName::texDir, albedoTexFilename);
-    lssMat.albedoTexPath = albedoTexPath;
+    if (const Rc<DxvkImageView>& colorImageView = materialData.getColorTexture().getImageView(); colorImageView != nullptr) {
+      const std::string albedoTexFilename(matName + lss::ext::dds);
+      m_exporter.dumpImageToFile(ctx, BASE_DIR + lss::commonDirName::texDir,
+                                 albedoTexFilename,
+                                 colorImageView->image());
+      const std::string albedoTexPath = str::format(BASE_DIR + lss::commonDirName::texDir, albedoTexFilename);
+      lssMat.albedoTexPath = albedoTexPath;
+    } else {
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Mat:", matName,
+        "] Skipping albedo texture export because the material has no image view."));
+    }
     // Opacity
     lssMat.enableOpacity = bEnableOpacity;
     // Collect sampler info
-    const auto& samplerCreateInfo = materialData.getSampler()->info();
-    lssMat.sampler.addrModeU = samplerCreateInfo.addressModeU;
-    lssMat.sampler.addrModeV = samplerCreateInfo.addressModeV;
-    lssMat.sampler.filter = samplerCreateInfo.magFilter;
-    lssMat.sampler.borderColor = samplerCreateInfo.borderColor;
+    if (DxvkSampler* pSampler = materialData.getSampler().ptr(); pSampler != nullptr) {
+      const auto& samplerCreateInfo = pSampler->info();
+      lssMat.sampler.addrModeU = samplerCreateInfo.addressModeU;
+      lssMat.sampler.addrModeV = samplerCreateInfo.addressModeV;
+      lssMat.sampler.filter = samplerCreateInfo.magFilter;
+      lssMat.sampler.borderColor = samplerCreateInfo.borderColor;
+    } else {
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Mat:", matName,
+        "] Skipping sampler export because the material has no sampler."));
+    }
 
     // Set populated LSS Material in our cache
     m_pCap->materials[materialData.getHash()].lssData = lssMat;
     Logger::debug("[GameCapturer][" + m_pCap->idStr + "][Mat:" + matName + "] New");
   }
 
-  void GameCapturer::captureMesh(const Rc<DxvkContext> ctx,
+  bool GameCapturer::captureMesh(const Rc<DxvkContext> ctx,
                                  const XXH64_hash_t currentMeshHash,
                                  const BlasEntry& blas,
                                  const CategoryFlags& flags,
@@ -530,6 +645,24 @@ namespace dxvk {
     const SkinningData& skinData = blas.input.getSkinningState();
     const RasterGeometry& rasterGeomData = blas.input.getGeometryData();
 
+    if (!isSupportedCapturePositionFormat(geomData.positionBuffer.vertexFormat())) {
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Mesh:", dxvk::hashToString(currentMeshHash),
+        "] Skipping mesh capture due to unsupported position format ", static_cast<uint32_t>(geomData.positionBuffer.vertexFormat()), "."));
+      return false;
+    }
+
+    if (geomData.vertexCount == 0u) {
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Mesh:", dxvk::hashToString(currentMeshHash),
+        "] Skipping mesh capture because vertexCount is 0."));
+      return false;
+    }
+
+    if (bCaptureIndices && geomData.indexBuffer.defined() && !isSupportedCaptureIndexType(geomData.indexBuffer.indexType())) {
+      Logger::warn(str::format("[GameCapturer][", m_pCap->idStr, "][Mesh:", dxvk::hashToString(currentMeshHash),
+        "] Skipping mesh capture due to unsupported index type ", static_cast<uint32_t>(geomData.indexBuffer.indexType()), "."));
+      return false;
+    }
+
     // Safely get a handle to the mesh
     std::shared_ptr<Mesh> pMesh;
     {
@@ -540,10 +673,7 @@ namespace dxvk {
     // Note: Ensures that reading a Vec3 from the position buffer will result in the proper values. This can be extended if
     // games use odd formats like R32G32B32A32 in the future, but cannot be less than 3 components unless the code is modified
     // to accomodate other strange formats.
-    assert((geomData.positionBuffer.vertexFormat() == VK_FORMAT_R32G32B32_SFLOAT) ||
-           (geomData.positionBuffer.vertexFormat() == VK_FORMAT_R32G32B32A32_SFLOAT));
     const size_t numVertices = geomData.vertexCount;
-    assert(numVertices > 0);
     const size_t numIndices = geomData.indexCount;
     const bool isDoubleSided = geomData.cullMode == VK_CULL_MODE_NONE;
     if (bIsNewMesh) {
@@ -578,7 +708,7 @@ namespace dxvk {
       }
     }
     
-    if (bCaptureNormals && geomData.normalBuffer.defined()) {
+    if (bCaptureNormals && geomData.normalBuffer.defined() && isSupportedCaptureNormalFormat(geomData.normalBuffer.vertexFormat())) {
       if (skinData.numBones > 0) {
         captureMeshNormals(ctx, rasterGeomData.vertexCount, rasterGeomData.normalBuffer, m_pCap->currentFrameNum, pMesh);
       } else {
@@ -590,11 +720,11 @@ namespace dxvk {
       captureMeshIndices(ctx, geomData, m_pCap->currentFrameNum, m_pCap->camera, pMesh);
     }
 
-    if (bIsNewMesh && geomData.texcoordBuffer.defined()) {
+    if (bIsNewMesh && geomData.texcoordBuffer.defined() && isSupportedCaptureTexcoordFormat(geomData.texcoordBuffer.vertexFormat())) {
       captureMeshTexCoords(ctx, geomData, m_pCap->currentFrameNum, pMesh);
     }
 
-    if (bIsNewMesh && geomData.color0Buffer.defined()) {
+    if (bIsNewMesh && geomData.color0Buffer.defined() && isSupportedCaptureColorFormat(geomData.color0Buffer.vertexFormat())) {
       captureMeshColor(ctx, geomData, m_pCap->currentFrameNum, pMesh);
     }
 
@@ -602,6 +732,8 @@ namespace dxvk {
       captureMeshBlending(ctx, rasterGeomData, m_pCap->currentFrameNum, pMesh);
       pMesh->lssData.boneXForms = matrix4VecToGfMatrix4dVec(skinData.pBoneMatrices);
     }
+
+    return true;
   }
 
   template <typename T>
@@ -977,6 +1109,7 @@ namespace dxvk {
 
       complete->stageName = cap.instance.stageName;
       complete->stagePath = cap.instance.stagePath;
+      complete->captureInstances = cap.bCaptureInstances;
       pState->set<State::Exporting, false>();
       pState->set<State::Complete, true>();
     };

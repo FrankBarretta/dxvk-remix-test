@@ -59,6 +59,7 @@ namespace dxvk {
       void update(const Rc<DxvkContext>& ctx);
       void show(const Rc<DxvkContext>& ctx);
       void validateStageName();
+      std::string getStageNameForCapture() const;
       bool m_isCaptureNameInvalid = false;
       bool isStageNameValid();
     private:

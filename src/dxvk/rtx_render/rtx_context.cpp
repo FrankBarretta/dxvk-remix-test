@@ -629,12 +629,7 @@ namespace dxvk {
       
       if (s_triggerUsdCapture) {
         s_triggerUsdCapture = false;
-
-        if (m_isD3D11Remix) {
-          Logger::warn("D3D11: Capture Scene is temporarily disabled on the experimental DX11 Remix path because starting a USD capture currently destabilizes the auxiliary pipeline.");
-        } else {
-          m_common->capturer()->triggerNewCapture();
-        }
+        m_common->capturer()->triggerNewCapture();
       }
       logInjectProbeStep("after usd-capture-check");
 
@@ -1050,6 +1045,7 @@ namespace dxvk {
   }
 
   void RtxContext::endFrameSceneCaptureOnly() {
+    getSceneManager().prepareSceneData(this, m_execBarriers);
     getSceneManager().onFrameEnd(this);
     getSceneManager().clearFogState();
 
