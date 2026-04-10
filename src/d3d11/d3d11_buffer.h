@@ -3,8 +3,6 @@
 #include "../dxvk/dxvk_cs.h"
 #include "../dxvk/dxvk_device.h"
 
-#include "../d3d10/d3d10_buffer.h"
-
 #include "d3d11_device_child.h"
 #include "d3d11_interfaces.h"
 #include "d3d11_resource.h"
@@ -113,11 +111,6 @@ namespace dxvk {
     DxvkBufferSliceHandle GetMappedSlice() const {
       return m_mapped;
     }
-
-    D3D10Buffer* GetD3D10Iface() {
-      return &m_d3d10;
-    }
-
     bool HasSequenceNumber() const {
       return m_mapMode != D3D11_COMMON_BUFFER_MAP_MODE_NONE
           && !(m_desc.MiscFlags & D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS)
@@ -153,8 +146,6 @@ namespace dxvk {
     uint64_t                      m_seq = 0ull;
 
     D3D11DXGIResource             m_resource;
-    D3D10Buffer                   m_d3d10;
-
     BOOL CheckFormatFeatureSupport(
             VkFormat              Format,
             VkFormatFeatureFlags  Features) const;

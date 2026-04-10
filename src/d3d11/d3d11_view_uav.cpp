@@ -441,11 +441,7 @@ namespace dxvk {
                 | VK_ACCESS_TRANSFER_READ_BIT
                 | VK_ACCESS_SHADER_WRITE_BIT
                 | VK_ACCESS_SHADER_READ_BIT;
-    return device->createBuffer(
-      info,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-      DxvkMemoryStats::Category::AppBuffer,
-      "D3D11 UAV counter");
+    return device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, DxvkMemoryStats::Category::AppBuffer, "d3d11 uav counter");
   }
   
 }

@@ -19,6 +19,8 @@
 * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 * DEALINGS IN THE SOFTWARE.
 */
+#include <array>
+#include <cwctype>
 #include <numeric>
 
 #include "util_env.h"
@@ -140,6 +142,43 @@ namespace dxvk::env {
     if (extp != std::string::npos && exeName.substr(extp + 1) == "exe")
       exeName.erase(extp);
     return exeName;
+  }
+
+  bool shouldBypassRemixForCurrentProcess() {
+    static const std::array<const wchar_t*, 11> kHelperProcessTokens = {{
+      L"crashhandler",
+      L"crashreport",
+      L"crashpad",
+      L"reporter",
+      L"bugreport",
+      L"launcher",
+      L"bootstrap",
+      L"updater",
+      L"installer",
+      L"patcher",
+      L"helper"
+    }};
+
+    std::vector<WCHAR> exePath;
+    exePath.resize(MAX_PATH + 1);
+
+    DWORD len = ::GetModuleFileNameW(NULL, exePath.data(), MAX_PATH);
+    exePath.resize(len);
+
+    std::wstring exeName = exePath.data();
+    const size_t slash = exeName.find_last_of(L"\\/");
+    if (slash != std::wstring::npos)
+      exeName.erase(0, slash + 1);
+
+    for (wchar_t& ch : exeName)
+      ch = static_cast<wchar_t>(std::towlower(ch));
+
+    for (const wchar_t* token : kHelperProcessTokens) {
+      if (exeName.find(token) != std::wstring::npos)
+        return true;
+    }
+
+    return false;
   }
 
   // NV-DXVK start

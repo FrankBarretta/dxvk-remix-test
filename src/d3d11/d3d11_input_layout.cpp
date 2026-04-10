@@ -8,11 +8,8 @@ namespace dxvk {
           uint32_t              numAttributes,
     const DxvkVertexAttribute*  pAttributes,
           uint32_t              numBindings,
-    const DxvkVertexBinding*    pBindings,
-    const D3D11SemanticInfo*    pSemantics,
-          uint32_t              numSemantics)
-  : D3D11DeviceChild<ID3D11InputLayout>(pDevice),
-    m_d3d10(this) {
+    const DxvkVertexBinding*    pBindings)
+  : D3D11DeviceChild<ID3D11InputLayout>(pDevice) {
     m_attributes.resize(numAttributes);
     m_bindings.resize(numBindings);
     
@@ -21,14 +18,6 @@ namespace dxvk {
     
     for (uint32_t i = 0; i < numBindings; i++)
       m_bindings.at(i) = pBindings[i];
-
-    // NV-DXVK start: Store semantic info for RTX attribute resolution
-    if (pSemantics != nullptr && numSemantics > 0) {
-      m_semantics.resize(numSemantics);
-      for (uint32_t i = 0; i < numSemantics; i++)
-        m_semantics.at(i) = pSemantics[i];
-    }
-    // NV-DXVK end
   }
   
   
@@ -47,12 +36,6 @@ namespace dxvk {
      || riid == __uuidof(ID3D11DeviceChild)
      || riid == __uuidof(ID3D11InputLayout)) {
       *ppvObject = ref(this);
-      return S_OK;
-    }
-    
-    if (riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10InputLayout)) {
-      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
     

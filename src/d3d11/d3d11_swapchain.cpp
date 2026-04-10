@@ -1,193 +1,146 @@
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
 #include "d3d11_swapchain.h"
-#include "d3d11_trace.h"
+
+#include "../dxvk/imgui/dxvk_imgui.h"
+#include "../dxvk/rtx_render/rtx_option.h"
 
 #include <mutex>
 #include <unordered_map>
+#include <fstream>
 
-#include "../dxvk/dxvk_objects.h"
-#include "../dxvk/imgui/dxvk_imgui.h"
-#include "../dxvk/rtx_render/rtx_option.h"
-#include "../dxvk/rtx_render/rtx_bridge_message_channel.h"
-#include "../util/util_string.h"
+static void debugLog(const char* msg) {
+  static std::ofstream f("d3d11_debug.log", std::ios::app);
+  f << msg << std::endl;
+  f.flush();
+}
 
 namespace dxvk {
 
-  namespace {
+  static UINT getRemixToggleUiMessage() {
+    static const UINT s_msg = RegisterWindowMessageA("DXVK_REMIX_TOGGLE_UI");
+    return s_msg;
+  }
 
-    bool ShouldTracePresentFrame(uint64_t frameId) {
-      return frameId < 8;
+  // Per-HWND map so the static WndProc callback can find its swapchain.
+  static std::mutex                                    g_d3d11WndProcMutex;
+  static std::unordered_map<HWND, D3D11SwapChain*>    g_d3d11WndProcMap;
+
+  // Primary swap chain: only this one renders the Remix UI overlay and drives
+  // RT frame boundaries (EndFrame / OnPresent).  Multi-device games (Unity,
+  // UE4) and emulators create multiple swap chains; without this guard the
+  // overlay would render twice and RT state would be confused.  The first
+  // swap chain to present claims primary.  If it's destroyed, the next one
+  // takes over.
+  static std::mutex          g_primaryMutex;
+  static D3D11SwapChain*     g_primarySwapChain = nullptr;
+
+  static LRESULT CALLBACK D3D11SwapChainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // Reentrancy guard: driver-injected WndProcs (e.g. Intel OPENGL32.dll)
+    // can re-dispatch messages to the same HWND, causing infinite recursion.
+    // On re-entry, skip our processing but still forward through the chain
+    // so the game's WndProc receives messages. Hard-cap depth to prevent
+    // stack overflow from pathological chains.
+    thread_local int recursionDepth = 0;
+    ++recursionDepth;
+
+    if (recursionDepth > 8) {
+      --recursionDepth;
+      return DefWindowProcW(hWnd, msg, wParam, lParam);
     }
 
-    struct D3D11WindowData {
-      bool unicode;
-      WNDPROC proc;
-      D3D11SwapChain* swapchain;
-    };
-
-    std::mutex g_primarySwapChainMutex;
-    D3D11SwapChain* g_primarySwapChain = nullptr;
-
-    std::recursive_mutex g_d3d11WindowProcMapMutex;
-    std::unordered_map<HWND, D3D11WindowData> g_d3d11WindowProcMap;
-
-    template <typename T, typename J, typename ... Args>
-    auto CallCharsetFunction(T unicode, J ascii, bool isUnicode, Args... args) {
-      return isUnicode
-        ? unicode(args...)
-        : ascii(args...);
-    }
-
-    bool IsInputMessage(UINT message) {
-      switch (message) {
-        case WM_INPUT:
-        case WM_CHAR:
-        case WM_SYSCHAR:
-        case WM_UNICHAR:
-        case WM_KEYDOWN:
-        case WM_KEYUP:
-        case WM_SYSKEYDOWN:
-        case WM_SYSKEYUP:
-        case WM_MOUSEMOVE:
-        case WM_MOUSEWHEEL:
-        case WM_MOUSEHWHEEL:
-        case WM_LBUTTONDOWN:
-        case WM_LBUTTONUP:
-        case WM_LBUTTONDBLCLK:
-        case WM_RBUTTONDOWN:
-        case WM_RBUTTONUP:
-        case WM_RBUTTONDBLCLK:
-        case WM_MBUTTONDOWN:
-        case WM_MBUTTONUP:
-        case WM_MBUTTONDBLCLK:
-        case WM_XBUTTONDOWN:
-        case WM_XBUTTONUP:
-        case WM_XBUTTONDBLCLK:
-          return true;
-        default:
-          return false;
-      }
-    }
-
-    LRESULT CALLBACK D3D11WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-
-    bool IsWindowProcHooked(HWND window, bool isUnicode) {
-      const auto proc = reinterpret_cast<WNDPROC>(
-        CallCharsetFunction(
-          GetWindowLongPtrW, GetWindowLongPtrA, isUnicode,
-          window, GWLP_WNDPROC));
-
-      return proc == D3D11WindowProc;
-    }
-
-    void ResetWindowProc(HWND window) {
-      std::lock_guard<std::recursive_mutex> lock(g_d3d11WindowProcMapMutex);
-
-      auto it = g_d3d11WindowProcMap.find(window);
-      if (it == g_d3d11WindowProcMap.end())
-        return;
-
-      auto proc = reinterpret_cast<WNDPROC>(
-        CallCharsetFunction(
-          GetWindowLongPtrW, GetWindowLongPtrA, it->second.unicode,
-          window, GWLP_WNDPROC));
-
-      if (proc == D3D11WindowProc && it->second.proc != nullptr) {
-        CallCharsetFunction(
-          SetWindowLongPtrW, SetWindowLongPtrA, it->second.unicode,
-          window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(it->second.proc));
-      }
-
-      g_d3d11WindowProcMap.erase(window);
-    }
-
-    void HookWindowProc(D3D11SwapChain* swapchain, HWND window) {
-      if (window == nullptr)
-        return;
-
-      std::lock_guard<std::recursive_mutex> lock(g_d3d11WindowProcMapMutex);
-
-      const bool isUnicode = IsWindowUnicode(window);
-      const bool isWindowProcAlreadyHooked = IsWindowProcHooked(window, isUnicode);
-
-      auto existingWindowData = g_d3d11WindowProcMap.find(window);
-      if (existingWindowData != g_d3d11WindowProcMap.end() && isWindowProcAlreadyHooked) {
-        existingWindowData->second.unicode = isUnicode;
-        existingWindowData->second.swapchain = swapchain;
-        return;
-      }
-
-      ResetWindowProc(window);
-
-      D3D11WindowData windowData;
-      windowData.unicode = isUnicode;
-      windowData.proc = reinterpret_cast<WNDPROC>(
-        CallCharsetFunction(
-          SetWindowLongPtrW, SetWindowLongPtrA, windowData.unicode,
-          window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(D3D11WindowProc)));
-      windowData.swapchain = swapchain;
-      g_d3d11WindowProcMap[window] = windowData;
-
-      Logger::info(str::format("D3D11: Hooked window proc for window ", window, ", previous proc=", reinterpret_cast<const void*>(windowData.proc)));
-
-      if (windowData.proc == nullptr) {
-        Logger::info(str::format("D3D11: No winproc detected, initiating bridge message channel for: ", window));
-
-        if (BridgeMessageChannel::get().init(window, D3D11WindowProc)) {
-          auto& gui = swapchain->GetDxvkDevice()->getCommon()->getImgui();
-          gui.switchMenu(RtxOptions::showUI(), true);
-        } else {
-          Logger::err("D3D11: Unable to init bridge message channel. Input capture may not work!");
-        }
-      }
-    }
-
-    LRESULT CALLBACK D3D11WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
-      D3D11WindowData windowData = {};
-
+    if (recursionDepth > 1) {
+      WNDPROC prev = nullptr;
       {
-        std::lock_guard<std::recursive_mutex> lock(g_d3d11WindowProcMapMutex);
-
-        auto it = g_d3d11WindowProcMap.find(window);
-        if (it == g_d3d11WindowProcMap.end())
-          return 0;
-
-        windowData = it->second;
+        std::lock_guard<std::mutex> lk(g_d3d11WndProcMutex);
+        auto it = g_d3d11WndProcMap.find(hWnd);
+        if (it != g_d3d11WndProcMap.end())
+          prev = it->second->m_prevWndProc;
       }
+      LRESULT result = prev ? CallWindowProcW(prev, hWnd, msg, wParam, lParam)
+                            : DefWindowProcW(hWnd, msg, wParam, lParam);
+      --recursionDepth;
+      return result;
+    }
 
-      if (message == WM_DESTROY || message == WM_NCDESTROY)
-        ResetWindowProc(window);
-
-      if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN || message == WM_KEYUP || message == WM_SYSKEYUP) {
-        if (wParam == VK_MENU || wParam == 'X') {
-          Logger::info(str::format("D3D11WindowProc: key message=", message, ", vk=", wParam, ", hwnd=", window));
-        }
+    D3D11SwapChain* sc  = nullptr;
+    WNDPROC         prev = nullptr;
+    {
+      std::lock_guard<std::mutex> lk(g_d3d11WndProcMutex);
+      auto it = g_d3d11WndProcMap.find(hWnd);
+      if (it != g_d3d11WndProcMap.end()) {
+        sc   = it->second;
+        prev = sc->m_prevWndProc;
       }
+    }
 
-      auto& gui = windowData.swapchain->GetDxvkDevice()->getCommon()->getImgui();
-      if (gui.isInit())
-        gui.wndProcHandler(window, message, wParam, lParam);
-
-      if (RtxOptions::showUI() != UIType::None
-       && RtxOptions::blockInputToGameInUI()
-       && IsInputMessage(message)) {
-        return 0;
-      }
-
-      if (windowData.proc != nullptr) {
-        const bool unicode = windowData.proc
-          ? windowData.unicode
-          : IsWindowUnicode(window);
-
-        return CallCharsetFunction(
-          CallWindowProcW, CallWindowProcA, unicode,
-          windowData.proc, window, message, wParam, lParam);
-      }
-
+    if (sc != nullptr && msg == getRemixToggleUiMessage()) {
+      auto& gui = sc->m_device->getCommon()->getImgui();
+      gui.switchMenu(static_cast<UIType>(wParam), lParam != 0);
+      --recursionDepth;
       return 0;
     }
 
+    // --- In-process input handling ---
+    // The D3D11 bridge loads directly into the game process. The game's
+    // WndProc and DefWindowProcW have direct side effects on the message queue:
+    //
+    //  - DefWindowProcW(WM_SYSKEYDOWN) activates the system menu, which
+    //    generates spurious WM_KEYUP events that reset ImGui's key state.
+    //    This makes hotkeys rapid-toggle (open/close every frame) instead
+    //    of toggling once per press.
+    //
+    //  - WM_SYSCHAR triggers SC_KEYMENU in DefWindowProcW, adding more
+    //    key state corruption.
+    //
+    // Fix: let ImGui process ALL messages first, then block system key
+    // messages from reaching the game's WndProc / DefWindowProcW.
+    // Allow Alt+F4 (close), Alt+Enter (fullscreen), and bare Alt
+    // (VK_MENU) through so standard OS combos still work.
+
+    if (sc != nullptr) {
+      auto& gui = sc->m_device->getCommon()->getImgui();
+      if (gui.isInit()) {
+        // ImGui sees the message first — updates key state and UI input
+        gui.wndProcHandler(hWnd, msg, wParam, lParam);
+
+        const bool isKeyMsg   = (msg >= WM_KEYFIRST && msg <= WM_KEYLAST)
+                             || (msg >= WM_SYSKEYDOWN && msg <= WM_SYSDEADCHAR);
+        const bool isMouseMsg = (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST)
+                             || msg == WM_INPUT;
+
+        // When explicitly enabled, block all game input while the Remix UI is open.
+        const bool uiOpen = (RtxOptions::showUI() != UIType::None);
+        if (uiOpen && RtxOptions::blockInputToGameInUI()) {
+          if (isKeyMsg || isMouseMsg) {
+            --recursionDepth;
+            return 0;
+          }
+        }
+      }
+    }
+
+    // Block system key messages from the game to prevent key state corruption.
+    // Bare Alt (VK_MENU) passes through so games can detect Alt held/released.
+    // Alt+F4 and Alt+Enter pass through for close and fullscreen toggle.
+    switch (msg) {
+    case WM_SYSKEYDOWN:
+    case WM_SYSKEYUP:
+      if (wParam == VK_MENU || wParam == VK_F4 || wParam == VK_RETURN)
+        break;  // allow these through to the game
+      --recursionDepth;
+      return 0;
+    case WM_SYSCHAR:
+      --recursionDepth;
+      return 0;
+    }
+
+    // Decrement AFTER CallWindowProcW returns — the previous WndProc
+    // (e.g. opengl32) can pump messages that re-enter this callback.
+    LRESULT result = prev ? CallWindowProcW(prev, hWnd, msg, wParam, lParam)
+                          : DefWindowProcW(hWnd, msg, wParam, lParam);
+    --recursionDepth;
+    return result;
   }
 
   static uint16_t MapGammaControlPoint(float x) {
@@ -211,37 +164,53 @@ namespace dxvk {
     m_frameLatencyCap(pDevice->GetOptions()->maxFrameLatency) {
     CreateFrameLatencyEvent();
 
+    // Hook the game's WndProc so ImGui receives WM_KEYDOWN/WM_KEYUP for hotkeys.
+    // Must use SetWindowLongPtrW (GWLP_WNDPROC) — the correct x64 API.
+    {
+      std::lock_guard<std::mutex> lk(g_d3d11WndProcMutex);
+      if (g_d3d11WndProcMap.find(hWnd) == g_d3d11WndProcMap.end()) {
+        m_prevWndProc = reinterpret_cast<WNDPROC>(
+          SetWindowLongPtrW(hWnd, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(D3D11SwapChainWndProc)));
+        g_d3d11WndProcMap[hWnd] = this;
+      }
+    }
+
+    Logger::info(str::format("[D3D11SwapChain] Created: HWND=", (uintptr_t)hWnd,
+      " ", pDesc->Width, "x", pDesc->Height,
+      " fmt=", pDesc->Format,
+      " buffers=", pDesc->BufferCount,
+      " this=", (uintptr_t)this));
+
     if (!pDevice->GetOptions()->deferSurfaceCreation)
       CreatePresenter();
     
     CreateBackBuffer();
     CreateBlitter();
     CreateHud();
-
-    HookWindowProc(this, m_window);
   }
 
 
   D3D11SwapChain::~D3D11SwapChain() {
-    {
-      std::lock_guard<std::mutex> lock(g_primarySwapChainMutex);
-
-      if (g_primarySwapChain == this) {
-        g_primarySwapChain = nullptr;
-      }
-    }
-
-    {
-      std::lock_guard<std::recursive_mutex> lock(g_d3d11WindowProcMapMutex);
-
-      auto it = g_d3d11WindowProcMap.find(m_window);
-      if (it != g_d3d11WindowProcMap.end() && it->second.swapchain == this) {
-        ResetWindowProc(m_window);
-      }
+    // Restore the original WndProc and remove from map FIRST — prevents the
+    // static WndProc callback from accessing this swap chain while waitForIdle
+    // runs.  Messages during cleanup reach the game's own handler.
+    if (m_prevWndProc != nullptr) {
+      std::lock_guard<std::mutex> lk(g_d3d11WndProcMutex);
+      SetWindowLongPtrW(m_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_prevWndProc));
+      g_d3d11WndProcMap.erase(m_window);
+      m_prevWndProc = nullptr;
     }
 
     m_device->waitForSubmission(&m_presentStatus);
     m_device->waitForIdle();
+
+    // Release primary swap chain ownership so the next one can take over.
+    {
+      std::lock_guard<std::mutex> lk(g_primaryMutex);
+      if (g_primarySwapChain == this)
+        g_primarySwapChain = nullptr;
+    }
     
     if (m_backBuffer)
       m_backBuffer->ReleasePrivate();
@@ -400,15 +369,10 @@ namespace dxvk {
           UINT                      SyncInterval,
           UINT                      PresentFlags,
     const DXGI_PRESENT_PARAMETERS*  pPresentParameters) {
-    std::lock_guard<std::mutex> lock(m_presentMutex);
-
     auto options = m_parent->GetOptions();
 
     if (options->syncInterval >= 0)
       SyncInterval = options->syncInterval;
-
-    if (RtxOptions::enableVsyncState == EnableVsync::WaitingForImplicitSwapchain)
-      RtxOptions::enableVsyncState = SyncInterval != 0 ? EnableVsync::On : EnableVsync::Off;
 
     if (!(PresentFlags & DXGI_PRESENT_TEST)) {
       bool vsync = SyncInterval != 0;
@@ -467,168 +431,169 @@ namespace dxvk {
 
 
   HRESULT D3D11SwapChain::PresentImage(UINT SyncInterval) {
-    const bool tracePresent = ShouldTracePresentFrame(m_frameId);
-
-    if (tracePresent)
-      D3D11EarlyTrace("D3D11SwapChain::PresentImage enter");
-
+    debugLog("[PresentImage] enter");
     Com<ID3D11DeviceContext> deviceContext = nullptr;
     m_parent->GetImmediateContext(&deviceContext);
-
-    if (tracePresent)
-      D3D11EarlyTrace("D3D11SwapChain::PresentImage got immediate context");
+    debugLog("[PresentImage] got immediate context");
 
     auto immediateContext = static_cast<D3D11ImmediateContext*>(deviceContext.ptr());
-    D3D10DeviceLock contextLock = immediateContext->LockContext();
 
-    const bool remixEnabled = m_parent->GetOptions()->enableRemix;
-    bool isPrimarySwapChain = true;
+    // Determine primary swap chain BEFORE flush.
+    // Only the primary drives RT frame boundaries and the Remix overlay.
+    // Prefer the visible, window-sized presenter with real scene draws so
+    // transient helper or dummy chains do not steal authority.
+    bool isPrimary = false;
+    bool stole = false;
+    const uint32_t thisDraws = immediateContext->m_rtx.getDrawCallID();
+    m_lastPresentDrawCount = thisDraws;
 
-    if (remixEnabled) {
-      const bool hasSceneActivity = m_parent->RTX().HasProjectionMatrixThisFrame()
-        || m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame()
-        || m_parent->RTX().HasPendingDrawsThisFrame();
+    struct PrimaryCandidateInfo {
+      bool visible = false;
+      bool exactClientMatch = false;
+      bool nearClientMatch = false;
+      bool hasDraws = false;
+      uint64_t area = 0;
+      uint32_t draws = 0;
+      uint32_t clientWidth = 0;
+      uint32_t clientHeight = 0;
+    };
 
-      std::lock_guard<std::mutex> lock(g_primarySwapChainMutex);
+    auto describeCandidate = [](D3D11SwapChain* sc) {
+      PrimaryCandidateInfo info;
 
-      if (g_primarySwapChain == nullptr || (g_primarySwapChain != this && hasSceneActivity)) {
-        if (g_primarySwapChain != this) {
-          Logger::info(str::format("D3D11: primary swapchain set to ", this, " window=", m_window,
-            " sceneActivity=", hasSceneActivity));
+      if (sc == nullptr)
+        return info;
+
+      info.draws = sc->m_lastPresentDrawCount;
+      info.hasDraws = info.draws > 0;
+
+      const uint32_t width = sc->m_desc.Width;
+      const uint32_t height = sc->m_desc.Height;
+      info.area = uint64_t(width) * uint64_t(height);
+
+      if (width < 64 || height < 64)
+        return info;
+
+      info.visible = IsWindow(sc->m_window) && IsWindowVisible(sc->m_window) && !IsIconic(sc->m_window);
+
+      RECT clientRect = {};
+      if (IsWindow(sc->m_window) && GetClientRect(sc->m_window, &clientRect)) {
+        auto nonNegative = [](LONG value) -> uint32_t {
+          return value > 0 ? static_cast<uint32_t>(value) : 0u;
+        };
+        auto absDiff = [](uint32_t a, uint32_t b) -> uint32_t {
+          return a > b ? a - b : b - a;
+        };
+
+        info.clientWidth = nonNegative(clientRect.right - clientRect.left);
+        info.clientHeight = nonNegative(clientRect.bottom - clientRect.top);
+
+        if (info.clientWidth > 0 && info.clientHeight > 0) {
+          const uint32_t exactWidthTolerance = info.clientWidth / 16u + 8u;
+          const uint32_t exactHeightTolerance = info.clientHeight / 16u + 8u;
+          const uint32_t nearWidthTolerance = info.clientWidth / 4u + 64u;
+          const uint32_t nearHeightTolerance = info.clientHeight / 4u + 64u;
+
+          info.exactClientMatch = absDiff(width, info.clientWidth) <= exactWidthTolerance
+                               && absDiff(height, info.clientHeight) <= exactHeightTolerance;
+          info.nearClientMatch = absDiff(width, info.clientWidth) <= nearWidthTolerance
+                              && absDiff(height, info.clientHeight) <= nearHeightTolerance;
         }
+      }
 
+      return info;
+    };
+
+    auto isClearlyBetterCandidate = [](const PrimaryCandidateInfo& candidate, const PrimaryCandidateInfo& current) {
+      if (candidate.visible != current.visible)
+        return candidate.visible;
+
+      if (candidate.exactClientMatch != current.exactClientMatch)
+        return candidate.exactClientMatch;
+
+      if (candidate.nearClientMatch != current.nearClientMatch)
+        return candidate.nearClientMatch;
+
+      if (candidate.hasDraws != current.hasDraws)
+        return candidate.hasDraws;
+
+      if (current.area == 0)
+        return candidate.area > 0;
+
+      if (candidate.area > current.area + current.area / 8)
+        return true;
+
+      if (candidate.draws > current.draws + 32)
+        return true;
+
+      return false;
+    };
+
+    D3D11SwapChain* previousPrimary = nullptr;
+
+    {
+      std::lock_guard<std::mutex> lk(g_primaryMutex);
+      previousPrimary = g_primarySwapChain;
+      if (g_primarySwapChain == nullptr || !IsWindow(g_primarySwapChain->m_window)) {
         g_primarySwapChain = this;
+        stole = true;
+      } else if (g_primarySwapChain != this && thisDraws > 0) {
+        const PrimaryCandidateInfo candidate = describeCandidate(this);
+        const PrimaryCandidateInfo current = describeCandidate(g_primarySwapChain);
+        if (isClearlyBetterCandidate(candidate, current)) {
+          g_primarySwapChain = this;
+          stole = true;
+        }
       }
-
-      isPrimarySwapChain = g_primarySwapChain == this;
+      isPrimary = (g_primarySwapChain == this);
     }
 
-    const bool useGuardedRtxFrameHooks = remixEnabled
-      && m_parent->UsesImmediateContextRtx()
-      && m_parent->RTX().CanUseRtxExecutionContext()
-      && m_parent->RTX().HasSeenRequiredTransforms();
-    const bool auxiliaryInjectRtxProbeCompleted = m_parent->RTX().HasCompletedAuxiliaryInjectRtxProbe();
-    const bool isAuxiliaryRemixPath = remixEnabled
-      && !m_parent->UsesImmediateContextRtx()
-      && m_parent->RTX().CanUseRtxExecutionContext()
-      && m_parent->RTX().HasSeenRequiredTransforms();
-    const bool auxiliaryCaptureSceneRequestedOrActive = isAuxiliaryRemixPath
-      && m_device->getCommon()->capturer()->hasPendingOrActiveCapture();
-    // NV-DXVK start: Allow a very short post-apply refresh window so DX11 menu
-    // changes can rebuild enough scene state to become visible, without keeping
-    // the auxiliary path hot just because the UI is open.
-    const bool auxiliaryUiRefreshRequested = isAuxiliaryRemixPath
-      && auxiliaryInjectRtxProbeCompleted
-      && m_parent->RTX().WasUiOptionRefreshRequestedRecently();
-    // NV-DXVK end
-    const bool guardedOptionRefreshRequested = isPrimarySwapChain
-      && useGuardedRtxFrameHooks
-      && RtxOptionManager::hasPendingChanges();
-    const bool auxiliaryOptionRefreshRequested = isAuxiliaryRemixPath
-      && auxiliaryInjectRtxProbeCompleted
-      && RtxOptionManager::hasPendingChanges();
-    const bool remixOptionRefreshRequested = guardedOptionRefreshRequested
-      || auxiliaryOptionRefreshRequested;
+    if (stole && previousPrimary != nullptr && previousPrimary != this && previousPrimary->m_device != m_device) {
+      auto& currentGui = m_device->getCommon()->getImgui();
+      const UIType previousMenuType = RtxOptions::showUI();
+      const UIType currentMenuType = RtxOptions::showUI();
 
-    // NV-DXVK start: Flush DX11 Remix option changes only at the safe present boundary.
-    if (remixOptionRefreshRequested) {
-      RtxOptionManager::applyPendingValuesOptionLayers();
-      RtxOptionManager::applyPendingValues(m_device.ptr());
-
-      if (auxiliaryOptionRefreshRequested
-       && !RtxOptionManager::hasPendingChanges()) {
-        m_parent->RTX().NotifyUiOptionRefreshRequested();
+      if (previousMenuType != currentMenuType) {
+        Logger::info(str::format("[D3D11SwapChain] Mirroring UI state onto new primary device: old=",
+          static_cast<int>(previousMenuType),
+          " new=", static_cast<int>(currentMenuType),
+          " oldSwapChain=", (uintptr_t)previousPrimary,
+          " newSwapChain=", (uintptr_t)this));
+        currentGui.switchMenu(previousMenuType, true);
       }
     }
-    // NV-DXVK end
 
-    const bool useAuxiliarySceneCaptureEndFrame = remixEnabled
-      && !m_parent->UsesImmediateContextRtx()
-      && m_parent->GetOptions()->remixPilotEnableSceneCaptureEndFrame
-      && m_parent->RTX().CanUseRtxExecutionContext()
-      && m_parent->RTX().HasSeenRequiredTransforms()
-      && ((!auxiliaryInjectRtxProbeCompleted
-          && m_parent->RTX().HasAuxiliaryPilotCaptureThisFrame())
-        || (auxiliaryInjectRtxProbeCompleted
-          && auxiliaryCaptureSceneRequestedOrActive));
-
-    const bool useAuxiliaryFullEndFrameAfterProbe = remixEnabled
-      && !m_parent->UsesImmediateContextRtx()
-      && m_parent->GetOptions()->remixPilotEnableFullEndFrameAfterProbe
-      && m_parent->RTX().CanUseRtxExecutionContext()
-      && m_parent->RTX().HasSeenRequiredTransforms()
-      && auxiliaryInjectRtxProbeCompleted
-      && (auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested)
-      && !auxiliaryCaptureSceneRequestedOrActive;
-    const bool useAuxiliaryInjectRtxAfterProbe = useAuxiliaryFullEndFrameAfterProbe
-      && m_parent->GetOptions()->remixPilotEnableInjectRtxAfterProbe
-      && (auxiliaryOptionRefreshRequested || auxiliaryUiRefreshRequested)
-      && !auxiliaryCaptureSceneRequestedOrActive;
-
-    const bool useAuxiliaryResetScreenResolution = (useAuxiliarySceneCaptureEndFrame || useAuxiliaryFullEndFrameAfterProbe)
-      && m_parent->GetOptions()->remixPilotEnableResetScreenResolution;
-
-    if (isPrimarySwapChain && useGuardedRtxFrameHooks) {
-      m_parent->RTX().ResetScreenResolution(immediateContext,
-        std::max(m_desc.Width, 1u),
-        std::max(m_desc.Height, 1u));
-    } else if (isPrimarySwapChain && useAuxiliaryResetScreenResolution) {
-      m_parent->RTX().ResetScreenResolution(immediateContext,
-        std::max(m_desc.Width, 1u),
-        std::max(m_desc.Height, 1u));
+    if (stole) {
+      const PrimaryCandidateInfo candidate = describeCandidate(this);
+      Logger::info(str::format("[D3D11SwapChain] Primary claimed: HWND=", (uintptr_t)m_window,
+        " draws=", thisDraws,
+        " ", m_desc.Width, "x", m_desc.Height,
+        " client=", candidate.clientWidth, "x", candidate.clientHeight,
+        " exact=", candidate.exactClientMatch ? 1 : 0,
+        " near=", candidate.nearClientMatch ? 1 : 0,
+        " this=", (uintptr_t)this));
     }
 
-    const bool useRemixPresentPath = isPrimarySwapChain
-      && useGuardedRtxFrameHooks
-      && m_parent->RTX().HasProjectionMatrixThisFrame();
-
-    if (tracePresent)
-      D3D11EarlyTrace("D3D11SwapChain::PresentImage after ResetScreenResolution");
-
-    if (isPrimarySwapChain) {
-      HookWindowProc(this, m_window);
+    // EndFrame BEFORE Flush — EndFrame emits injectRTX to the CS queue;
+    // the Flush below submits those RT commands to the GPU so the backbuffer
+    // contains the ray-traced composite when the blitter copies it to the
+    // Vulkan swap chain image.
+    debugLog(isPrimary ? "[PresentImage] isPrimary=true, calling EndFrame" : "[PresentImage] isPrimary=false");
+    if (isPrimary) {
+      debugLog("[PresentImage] before EndFrame");
+      immediateContext->m_rtx.EndFrame(m_swapImage);
+      debugLog("[PresentImage] after EndFrame");
     }
 
-    if (isPrimarySwapChain && useGuardedRtxFrameHooks) {
-      m_parent->RTX().EndFrame(immediateContext, m_swapImage);
-    } else if (isPrimarySwapChain && useAuxiliarySceneCaptureEndFrame) {
-      m_parent->RTX().EndFrame(immediateContext, m_swapImage, false);
-    } else if (isPrimarySwapChain && useAuxiliaryFullEndFrameAfterProbe) {
-      m_parent->RTX().EndFrame(immediateContext, m_swapImage, useAuxiliaryInjectRtxAfterProbe);
-    }
-
-    if (tracePresent)
-      D3D11EarlyTrace("D3D11SwapChain::PresentImage after EndFrame");
-
-    // Flush pending rendering commands before
+    // Flush all pending CS work: game draw commands AND (if primary) the
+    // injectRTX RT blit.  After this, m_swapImage holds the composited image.
     immediateContext->Flush();
-
-    if (tracePresent)
-      D3D11EarlyTrace("D3D11SwapChain::PresentImage after immediate Flush");
-
-    // NV-DXVK start: Reflex integration
-    const bool useReflexSimulationMarkers = isPrimarySwapChain
-      && remixEnabled
-      && m_parent->RTX().CanUseRtxExecutionContext();
-    const uint64_t currentReflexFrameId = useReflexSimulationMarkers
-      ? m_parent->RTX().GetCurrentReflexFrameId()
-      : 0u;
-
-    if (useReflexSimulationMarkers) {
-      auto& reflex = m_device->getCommon()->metaReflex();
-      reflex.setLatencyPingThread();
-      reflex.endSimulation(currentReflexFrameId);
-    }
-    // NV-DXVK end
 
     // Bump our frame id.
     ++m_frameId;
     
     for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
       SynchronizePresent();
-
-      if (tracePresent)
-        D3D11EarlyTrace("D3D11SwapChain::PresentImage after SynchronizePresent");
 
       if (!m_presenter->hasSwapChain())
         return DXGI_STATUS_OCCLUDED;
@@ -641,9 +606,7 @@ namespace dxvk {
 
       VkResult status = m_presenter->acquireNextImage(sync, imageIndex);
 
-      if (tracePresent)
-        D3D11EarlyTrace("D3D11SwapChain::PresentImage acquireNextImage complete");
-
+      uint32_t acquireRetries = 0;
       while (status != VK_SUCCESS) {
         RecreateSwapChain(m_vsync);
 
@@ -655,6 +618,12 @@ namespace dxvk {
 
         if (status == VK_SUBOPTIMAL_KHR)
           break;
+
+        // Bail out after a few retries — the surface keeps invalidating
+        // (window backgrounded, minimized, or being resized).  The caller
+        // will retry on the next Present call.
+        if (++acquireRetries > 3)
+          return DXGI_STATUS_OCCLUDED;
       }
 
       // Resolve back buffer if it is multisampled. We
@@ -662,90 +631,53 @@ namespace dxvk {
       m_context->beginRecording(
         m_device->createCommandList());
 
-      if (tracePresent)
-        D3D11EarlyTrace("D3D11SwapChain::PresentImage recording begun");
+      if (m_swapImageRtView != nullptr) {
+        DxvkRenderTargets renderTargets;
+        renderTargets.color[0].view = m_swapImageRtView;
+        renderTargets.color[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        m_context->bindRenderTargets(renderTargets);
+
+        if (m_hud != nullptr)
+          m_hud->render(m_context, info.format, info.imageExtent);
+
+        if (isPrimary) {
+          // Ensure our WndProc hook is installed and points to THIS swap chain.
+          // Needed when: (a) game replaced our hook, or (b) a previous primary's
+          // destructor restored the original WndProc before this chain took over.
+          {
+            std::lock_guard<std::mutex> lk(g_d3d11WndProcMutex);
+            WNDPROC current = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(m_window, GWLP_WNDPROC));
+            if (current != D3D11SwapChainWndProc) {
+              m_prevWndProc = current;
+              SetWindowLongPtrW(m_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(D3D11SwapChainWndProc));
+            }
+            g_d3d11WndProcMap[m_window] = this;
+          }
+
+          // Render Remix ImGui into the Remix backbuffer so the presented image
+          // remains a single Remix-owned composition instead of a DXVK-side overlay.
+          RtxOptionManager::applyPendingValues(m_device.ptr());
+          auto& gui = m_device->getCommon()->getImgui();
+          gui.render(m_window, m_context, info.format, info.imageExtent, m_vsync);
+        }
+      }
       
       m_blitter->presentImage(m_context.ptr(),
         m_imageViews.at(imageIndex), VkRect2D(),
         m_swapImageView, VkRect2D());
 
-      if (tracePresent)
-        D3D11EarlyTrace("D3D11SwapChain::PresentImage blitter presentImage complete");
-
-      if (m_hud != nullptr)
-        m_hud->render(m_context, info.format, info.imageExtent);
-
-      if (tracePresent)
-        D3D11EarlyTrace("D3D11SwapChain::PresentImage HUD render complete");
-
-      if (isPrimarySwapChain) {
-        auto& gui = m_device->getCommon()->getImgui();
-        gui.render(m_window, m_context, info.format, info.imageExtent, m_vsync);
-      }
-
-      if (tracePresent)
-        D3D11EarlyTrace("D3D11SwapChain::PresentImage ImGUI render complete");
-
-      const bool useAuxiliaryOnPresent = isPrimarySwapChain
-        && (useAuxiliarySceneCaptureEndFrame || useAuxiliaryFullEndFrameAfterProbe)
-        && m_parent->GetOptions()->remixPilotEnableOnPresent;
-
-      if (useRemixPresentPath) {
-        D3D11EarlyTrace("D3D11SwapChain::PresentImage remix skipping RTX OnPresent");
-        m_parent->RTX().AdvanceFrameIdForPresentBypass();
-      } else if (isPrimarySwapChain && useGuardedRtxFrameHooks) {
-        m_parent->RTX().OnPresent(immediateContext, m_imageViews.at(imageIndex)->image());
-
-        if (tracePresent)
-          D3D11EarlyTrace("D3D11SwapChain::PresentImage after RTX OnPresent");
-      } else if (useAuxiliaryOnPresent) {
-        m_parent->RTX().OnPresent(immediateContext, m_imageViews.at(imageIndex)->image());
-
-        if (tracePresent)
-          D3D11EarlyTrace("D3D11SwapChain::PresentImage after auxiliary RTX OnPresent");
-      } else if (isPrimarySwapChain && (useAuxiliarySceneCaptureEndFrame || useAuxiliaryFullEndFrameAfterProbe)) {
-        m_parent->RTX().AdvanceFrameIdForPresentBypass();
-      }
-
-      // The fallback DX11 path does not run the RTX context frame-end hook,
-      // so deferred UI option changes must be flushed here.
-      RtxOptionManager::applyPendingValuesOptionLayers();
-      RtxOptionManager::applyPendingValues(m_device.ptr());
-
-      if (tracePresent)
-        D3D11EarlyTrace("D3D11SwapChain::PresentImage option flush complete");
-      
       if (i + 1 >= SyncInterval)
         m_context->signal(m_frameLatencySignal, m_frameId);
 
-      SubmitPresent(immediateContext, sync, i, imageIndex,
-        useRemixPresentPath,
-        !remixEnabled || isPrimarySwapChain,
-        useReflexSimulationMarkers,
-        currentReflexFrameId);
+      if (isPrimary) {
+        // Register the acquired swapchain image as the present target.
+        immediateContext->m_rtx.OnPresent(m_imageViews.at(imageIndex)->image());
+      }
 
-      if (tracePresent)
-        D3D11EarlyTrace("D3D11SwapChain::PresentImage SubmitPresent complete");
+      SubmitPresent(immediateContext, sync, i, isPrimary);
     }
 
     SyncFrameLatency();
-
-    // NV-DXVK start: Reflex integration
-    if (useReflexSimulationMarkers) {
-      auto& reflex = m_device->getCommon()->metaReflex();
-
-      reflex.sleep();
-      m_parent->RTX().IncrementReflexFrameId();
-
-      const auto nextReflexFrameId = m_parent->RTX().GetCurrentReflexFrameId();
-      reflex.beginSimulation(nextReflexFrameId);
-      reflex.latencyPing(nextReflexFrameId);
-    }
-    // NV-DXVK end
-
-    if (tracePresent)
-      D3D11EarlyTrace("D3D11SwapChain::PresentImage complete");
-
     return S_OK;
   }
 
@@ -753,69 +685,41 @@ namespace dxvk {
   void D3D11SwapChain::SubmitPresent(
           D3D11ImmediateContext*  pContext,
     const vk::PresenterSync&      Sync,
-    uint32_t                FrameId,
-    uint32_t                ImageIndex,
-    bool                    useRemixPresentPath,
-    bool                    incrementPresentCount,
-    bool                    useReflexPresentMarkers,
-    uint64_t                currentReflexFrameId) {
-    D3D11EarlyTrace("D3D11SwapChain::SubmitPresent enter");
-
+          uint32_t                FrameId,
+          bool                    IsPrimary) {
     auto lock = pContext->LockContext();
 
     // Present from CS thread so that we don't
     // have to synchronize with it first.
     m_presentStatus.result = VK_NOT_READY;
 
-    if (useRemixPresentPath) {
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix sync path begin");
-
-      Rc<DxvkCommandList> commandList = m_context->endRecording();
-
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix before submitCommandList");
-      m_device->submitCommandList(commandList, Sync.acquire, Sync.present);
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix after submitCommandList");
-
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix before presentImage");
-      m_device->presentImage(currentReflexFrameId, useReflexPresentMarkers, ImageIndex, m_presenter, &m_presentStatus, incrementPresentCount);
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent remix after presentImage");
-      return;
-    }
-
     pContext->EmitCs([this,
-      cUseRemixPresentPath = useRemixPresentPath,
       cFrameId     = FrameId,
-      cImageIndex  = ImageIndex,
       cSync        = Sync,
-      cIncrementPresentCount = incrementPresentCount,
-      cUseReflexPresentMarkers = useReflexPresentMarkers,
-      cCurrentReflexFrameId = currentReflexFrameId,
+      cHud         = m_hud,
+      cIsPrimary   = IsPrimary,
       cCommandList = m_context->endRecording()
     ] (DxvkContext* ctx) {
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent CS begin");
-
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent before submitCommandList");
       m_device->submitCommandList(cCommandList,
         cSync.acquire, cSync.present);
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent after submitCommandList");
 
-      if (!cUseRemixPresentPath
-       && m_hud != nullptr
-       && !cFrameId) {
-        D3D11EarlyTrace("D3D11SwapChain::SubmitPresent before HUD update");
-        m_hud->update(1);
-        D3D11EarlyTrace("D3D11SwapChain::SubmitPresent after HUD update");
+      if (cHud != nullptr && !cFrameId)
+        cHud->update(0);
+
+      m_device->presentImage(0, false, 0, m_presenter, &m_presentStatus);
+
+      // Only the primary chain advances the Remix frame counter.  Secondary
+      // chains (video/loading) present their own images but must not bump
+      // getCurrentFrameId() — that would desynchronize the camera validity
+      // check in injectRTX and cause "not detecting a valid camera" errors.
+      if (cIsPrimary) {
+        m_device->incrementPresentCount();
+        Logger::info(str::format("[D3D11SwapChain] CS incrementPresentCount: newFrameId=",
+          m_device->getCurrentFrameId()));
       }
-
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent before presentImage");
-      m_device->presentImage(cCurrentReflexFrameId, cUseReflexPresentMarkers, cImageIndex, m_presenter, &m_presentStatus, cIncrementPresentCount);
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent after presentImage");
-
-      D3D11EarlyTrace("D3D11SwapChain::SubmitPresent CS complete");
     });
 
     pContext->FlushCsChunk();
-    D3D11EarlyTrace("D3D11SwapChain::SubmitPresent FlushCsChunk complete");
   }
 
 
@@ -937,6 +841,7 @@ namespace dxvk {
     
     m_swapImage         = nullptr;
     m_swapImageView     = nullptr;
+    m_swapImageRtView   = nullptr;
     m_backBuffer        = nullptr;
 
     // Create new back buffer
@@ -989,6 +894,9 @@ namespace dxvk {
     viewInfo.minLayer   = 0;
     viewInfo.numLayers  = 1;
     m_swapImageView = m_device->createImageView(m_swapImage, viewInfo);
+
+    viewInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    m_swapImageRtView = m_device->createImageView(m_swapImage, viewInfo);
     
     // Initialize the image so that we can use it. Clearing
     // to black prevents garbled output for the first frame.

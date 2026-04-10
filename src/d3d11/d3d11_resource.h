@@ -2,7 +2,50 @@
 
 #include "d3d11_include.h"
 
+#include <mutex>
+#include <unordered_map>
+
 namespace dxvk {
+
+  /**
+   * \brief In-process shared resource registry
+   *
+   * Maps fake HANDLE values to ID3D11Resource pointers so that
+   * GetSharedHandle / OpenSharedResource work between D3D11
+   * devices in the same process.  No GPU-specific code — works
+   * on any vendor.
+   */
+  class D3D11SharedResourceRegistry {
+  public:
+    static D3D11SharedResourceRegistry& Instance() {
+      static D3D11SharedResourceRegistry s;
+      return s;
+    }
+
+    HANDLE Register(ID3D11Resource* pResource) {
+      std::lock_guard<std::mutex> lk(m_mutex);
+      HANDLE h = reinterpret_cast<HANDLE>(++m_nextHandle);
+      m_map[h] = pResource;
+      return h;
+    }
+
+    void Unregister(HANDLE h) {
+      std::lock_guard<std::mutex> lk(m_mutex);
+      m_map.erase(h);
+    }
+
+    ID3D11Resource* Lookup(HANDLE h) {
+      std::lock_guard<std::mutex> lk(m_mutex);
+      auto it = m_map.find(h);
+      return it != m_map.end() ? it->second : nullptr;
+    }
+
+  private:
+    D3D11SharedResourceRegistry() = default;
+    std::mutex                              m_mutex;
+    uintptr_t                               m_nextHandle = 0;
+    std::unordered_map<HANDLE, ID3D11Resource*> m_map;
+  };
 
   /**
    * \brief Common resource description
@@ -89,6 +132,7 @@ namespace dxvk {
   private:
 
     ID3D11Resource* m_resource;
+    HANDLE          m_sharedHandle = nullptr;
 
   };
 

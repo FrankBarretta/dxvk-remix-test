@@ -6,23 +6,6 @@ dxgi_common_src = [
   '../dxgi/dxgi_swapchain.cpp',
 ]
 
-d3d10_src = [
-  '../d3d10/d3d10_blend.cpp',
-  '../d3d10/d3d10_buffer.cpp',
-  '../d3d10/d3d10_depth_stencil.cpp',
-  '../d3d10/d3d10_device.cpp',
-  '../d3d10/d3d10_input_layout.cpp',
-  '../d3d10/d3d10_multithread.cpp',
-  '../d3d10/d3d10_query.cpp',
-  '../d3d10/d3d10_rasterizer.cpp',
-  '../d3d10/d3d10_sampler.cpp',
-  '../d3d10/d3d10_texture.cpp',
-  '../d3d10/d3d10_util.cpp',
-  '../d3d10/d3d10_view_dsv.cpp',
-  '../d3d10/d3d10_view_rtv.cpp',
-  '../d3d10/d3d10_view_srv.cpp',
-]
-
 d3d11_src = [
   'd3d11_annotation.cpp',
   'd3d11_blend.cpp',
@@ -42,6 +25,7 @@ d3d11_src = [
   'd3d11_input_layout.cpp',
   'd3d11_interop.cpp',
   'd3d11_main.cpp',
+  'd3d11_multithread.cpp',
   'd3d11_options.cpp',
   'd3d11_query.cpp',
   'd3d11_rasterizer.cpp',
@@ -66,11 +50,14 @@ d3d11_shaders = files([
   'shaders/d3d11_video_blit_vert.vert',
 ])
 
-d3d11_dll = shared_library('d3d11'+dll_ext, dxgi_common_src + d3d11_src + d3d10_src,
+d3d11_rtx_include_path = include_directories('../dxvk', '../../public/include')
+
+d3d11_dll = shared_library('d3d11'+dll_ext, dxgi_common_src + d3d11_src,
     glsl_generator.process(d3d11_shaders), d3d11_res,
   name_prefix         : '',
+  link_args           : [ usd_plugin_delay_load_args, '/DEPENDENTLOADFLAG:0x1100' ],
   dependencies        : [ lib_dxgi, dxbc_dep, dxvk_dep ],
-  include_directories : [ dxvk_include_path, include_directories('../dxvk'), dxvk_shader_include_path, usd_include_paths ],
+  include_directories : [ dxvk_include_path, dxvk_shader_include_path, usd_include_paths, lssusd_include_paths, d3d11_rtx_include_path ],
   install             : true,
   vs_module_defs      : 'd3d11'+def_spec_ext,
   override_options    : ['cpp_std='+dxvk_cpp_std])

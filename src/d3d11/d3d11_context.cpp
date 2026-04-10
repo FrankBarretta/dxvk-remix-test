@@ -17,12 +17,13 @@ namespace dxvk {
   : D3D11DeviceChild<ID3D11DeviceContext4>(pParent),
     m_contextExt(this),
     m_annotation(this),
-    m_multithread(this, pParent != nullptr && pParent->GetOptions()->enableRemix),
+    m_multithread(this, false),
     m_device    (Device),
     m_staging   (Device, StagingBufferSize),
     m_csFlags   (CsFlags),
     m_csChunk   (AllocCsChunk()),
-    m_cmdData   (nullptr) {
+    m_cmdData   (nullptr),
+    m_rtx       (this) {
 
   }
   
@@ -72,7 +73,7 @@ namespace dxvk {
   
 
   void STDMETHODCALLTYPE D3D11DeviceContext::DiscardResource(ID3D11Resource* pResource) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (!pResource)
       return;
@@ -101,7 +102,7 @@ namespace dxvk {
           ID3D11View*              pResourceView,
     const D3D11_RECT*              pRects,
           UINT                     NumRects) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     // We don't support discarding individual rectangles
     if (!pResourceView || (NumRects && pRects))
@@ -146,7 +147,7 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::ClearState() {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     // Default shaders
     m_state.vs.shader = nullptr;
@@ -263,7 +264,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::SetPredication(
           ID3D11Predicate*                  pPredicate,
           BOOL                              PredicateValue) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     auto predicate = D3D11Query::FromPredicate(pPredicate);
     m_state.pr.predicateObject = predicate;
@@ -279,7 +280,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::GetPredication(
           ID3D11Predicate**                 ppPredicate,
           BOOL*                             pPredicateValue) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (ppPredicate)
       *ppPredicate = D3D11Query::AsPredicate(m_state.pr.predicateObject.ref());
@@ -314,7 +315,7 @@ namespace dxvk {
           UINT                              SrcSubresource,
     const D3D11_BOX*                        pSrcBox,
           UINT                              CopyFlags) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (!pDstResource || !pSrcResource)
       return;
@@ -390,7 +391,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::CopyResource(
           ID3D11Resource*                   pDstResource,
           ID3D11Resource*                   pSrcResource) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (!pDstResource || !pSrcResource || (pDstResource == pSrcResource))
       return;
@@ -451,7 +452,7 @@ namespace dxvk {
           ID3D11Buffer*                     pDstBuffer,
           UINT                              DstAlignedByteOffset,
           ID3D11UnorderedAccessView*        pSrcView) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     auto buf = static_cast<D3D11Buffer*>(pDstBuffer);
     auto uav = static_cast<D3D11UnorderedAccessView*>(pSrcView);
@@ -532,7 +533,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::ClearRenderTargetView(
           ID3D11RenderTargetView*           pRenderTargetView,
     const FLOAT                             ColorRGBA[4]) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     auto rtv = static_cast<D3D11RenderTargetView*>(pRenderTargetView);
     
@@ -557,7 +558,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::ClearUnorderedAccessViewUint(
           ID3D11UnorderedAccessView*        pUnorderedAccessView,
     const UINT                              Values[4]) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     auto uav = static_cast<D3D11UnorderedAccessView*>(pUnorderedAccessView);
     
@@ -659,7 +660,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::ClearUnorderedAccessViewFloat(
           ID3D11UnorderedAccessView*        pUnorderedAccessView,
     const FLOAT                             Values[4]) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     auto uav = static_cast<D3D11UnorderedAccessView*>(pUnorderedAccessView);
     
@@ -712,7 +713,7 @@ namespace dxvk {
           UINT                              ClearFlags,
           FLOAT                             Depth,
           UINT8                             Stencil) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     auto dsv = static_cast<D3D11DepthStencilView*>(pDepthStencilView);
     
@@ -756,7 +757,7 @@ namespace dxvk {
     const FLOAT                             Color[4], 
     const D3D11_RECT*                       pRect, 
           UINT                              NumRects) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (NumRects && !pRect)
       return;
@@ -889,7 +890,7 @@ namespace dxvk {
   
 
   void STDMETHODCALLTYPE D3D11DeviceContext::GenerateMips(ID3D11ShaderResourceView* pShaderResourceView) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     auto view = static_cast<D3D11ShaderResourceView*>(pShaderResourceView);
 
@@ -967,7 +968,7 @@ namespace dxvk {
           ID3D11Resource*                   pSrcResource,
           UINT                              SrcSubresource,
           DXGI_FORMAT                       Format) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     bool isSameSubresource = pDstResource   == pSrcResource
                           && DstSubresource == SrcSubresource;
@@ -1078,19 +1079,12 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::DrawAuto() {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     D3D11Buffer* buffer = m_state.ia.vertexBuffers[0].buffer.ptr();
 
     if (buffer == nullptr)
       return;
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
-      D3D11Rtx::DrawContext remixDrawContext;
-      remixDrawContext.indexed = false;
-      remixDrawContext.indirect = true;
-      m_parent->RTX().NotifyDraw(remixDrawContext);
-    }
     
     DxvkBufferSlice vtxBuf = buffer->GetBufferSlice();
     DxvkBufferSlice ctrBuf = buffer->GetSOCounter();
@@ -1109,31 +1103,21 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::Draw(
           UINT            VertexCount,
           UINT            StartVertexLocation) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
-    D3D11Rtx::DrawContext remixDrawContext;
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
-      remixDrawContext.indexed = false;
-      remixDrawContext.indirect = false;
-      remixDrawContext.vertexCount = VertexCount;
-      remixDrawContext.indexCount = 0u;
-      remixDrawContext.instanceCount = 1u;
-      remixDrawContext.firstVertex = StartVertexLocation;
-      remixDrawContext.firstIndex = 0u;
-      remixDrawContext.vertexOffset = 0;
-      remixDrawContext.firstInstance = 0u;
-      m_parent->RTX().NotifyDraw(remixDrawContext);
+    static bool firstDraw = true;
+    if (firstDraw) {
+      firstDraw = false;
+      Logger::info(str::format("D3D11 Draw: first call, VertexCount=", VertexCount));
     }
+
+    m_rtx.OnDraw(VertexCount, StartVertexLocation);
 
     EmitCs([=] (DxvkContext* ctx) {
       ctx->draw(
         VertexCount, 1,
         StartVertexLocation, 0);
     });
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
-      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
@@ -1141,32 +1125,16 @@ namespace dxvk {
           UINT            IndexCount,
           UINT            StartIndexLocation,
           INT             BaseVertexLocation) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
-    D3D11Rtx::DrawContext remixDrawContext;
+    m_rtx.OnDrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
 
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
-      remixDrawContext.indexed = true;
-      remixDrawContext.indirect = false;
-      remixDrawContext.vertexCount = 0u;
-      remixDrawContext.indexCount = IndexCount;
-      remixDrawContext.instanceCount = 1u;
-      remixDrawContext.firstVertex = 0u;
-      remixDrawContext.firstIndex = StartIndexLocation;
-      remixDrawContext.vertexOffset = BaseVertexLocation;
-      remixDrawContext.firstInstance = 0u;
-      m_parent->RTX().NotifyDraw(remixDrawContext);
-    }
-    
     EmitCs([=] (DxvkContext* ctx) {
       ctx->drawIndexed(
         IndexCount, 1,
         StartIndexLocation,
         BaseVertexLocation, 0);
     });
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
-      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
@@ -1175,23 +1143,10 @@ namespace dxvk {
           UINT            InstanceCount,
           UINT            StartVertexLocation,
           UINT            StartInstanceLocation) {
-    D3D10DeviceLock lock = LockContext();
-
-    D3D11Rtx::DrawContext remixDrawContext;
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
-      remixDrawContext.indexed = false;
-      remixDrawContext.indirect = false;
-      remixDrawContext.vertexCount = VertexCountPerInstance;
-      remixDrawContext.indexCount = 0u;
-      remixDrawContext.instanceCount = InstanceCount;
-      remixDrawContext.firstVertex = StartVertexLocation;
-      remixDrawContext.firstIndex = 0u;
-      remixDrawContext.vertexOffset = 0;
-      remixDrawContext.firstInstance = StartInstanceLocation;
-      m_parent->RTX().NotifyDraw(remixDrawContext);
-    }
+    D3D11DeviceLock lock = LockContext();
     
+    m_rtx.OnDrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
+
     EmitCs([=] (DxvkContext* ctx) {
       ctx->draw(
         VertexCountPerInstance,
@@ -1199,9 +1154,6 @@ namespace dxvk {
         StartVertexLocation,
         StartInstanceLocation);
     });
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
-      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
@@ -1211,23 +1163,10 @@ namespace dxvk {
           UINT            StartIndexLocation,
           INT             BaseVertexLocation,
           UINT            StartInstanceLocation) {
-    D3D10DeviceLock lock = LockContext();
-
-    D3D11Rtx::DrawContext remixDrawContext;
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
-      remixDrawContext.indexed = true;
-      remixDrawContext.indirect = false;
-      remixDrawContext.vertexCount = 0u;
-      remixDrawContext.indexCount = IndexCountPerInstance;
-      remixDrawContext.instanceCount = InstanceCount;
-      remixDrawContext.firstVertex = 0u;
-      remixDrawContext.firstIndex = StartIndexLocation;
-      remixDrawContext.vertexOffset = BaseVertexLocation;
-      remixDrawContext.firstInstance = StartInstanceLocation;
-      m_parent->RTX().NotifyDraw(remixDrawContext);
-    }
+    D3D11DeviceLock lock = LockContext();
     
+    m_rtx.OnDrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
+
     EmitCs([=] (DxvkContext* ctx) {
       ctx->drawIndexed(
         IndexCountPerInstance,
@@ -1236,27 +1175,14 @@ namespace dxvk {
         BaseVertexLocation,
         StartInstanceLocation);
     });
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
-      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::DrawIndexedInstancedIndirect(
           ID3D11Buffer*   pBufferForArgs,
           UINT            AlignedByteOffsetForArgs) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
-
-    D3D11Rtx::DrawContext remixDrawContext;
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
-      remixDrawContext.indexed = true;
-      remixDrawContext.indirect = true;
-      remixDrawContext.indirectArgsBuffer = static_cast<D3D11Buffer*>(pBufferForArgs);
-      remixDrawContext.indirectArgsOffset = AlignedByteOffsetForArgs;
-      m_parent->RTX().NotifyDraw(remixDrawContext);
-    }
 
     if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDrawIndexedIndirectCommand)))
       return;
@@ -1283,27 +1209,14 @@ namespace dxvk {
       cmdData->count  = 1;
       cmdData->stride = 0;
     }
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
-      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::DrawInstancedIndirect(
           ID3D11Buffer*   pBufferForArgs,
           UINT            AlignedByteOffsetForArgs) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
-
-    D3D11Rtx::DrawContext remixDrawContext;
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)) {
-      remixDrawContext.indexed = false;
-      remixDrawContext.indirect = true;
-      remixDrawContext.indirectArgsBuffer = static_cast<D3D11Buffer*>(pBufferForArgs);
-      remixDrawContext.indirectArgsOffset = AlignedByteOffsetForArgs;
-      m_parent->RTX().NotifyDraw(remixDrawContext);
-    }
 
     if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDrawIndirectCommand)))
       return;
@@ -1330,9 +1243,6 @@ namespace dxvk {
       cmdData->count  = 1;
       cmdData->stride = 0;
     }
-
-    if (unlikely(this->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE))
-      m_parent->RTX().CommitGeometryToRT(this, remixDrawContext);
   }
   
   
@@ -1340,7 +1250,7 @@ namespace dxvk {
           UINT            ThreadGroupCountX,
           UINT            ThreadGroupCountY,
           UINT            ThreadGroupCountZ) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     EmitCs([=] (DxvkContext* ctx) {
       ctx->dispatch(
@@ -1354,7 +1264,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::DispatchIndirect(
           ID3D11Buffer*   pBufferForArgs,
           UINT            AlignedByteOffsetForArgs) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     SetDrawBuffers(pBufferForArgs, nullptr);
     
     if (!ValidateDrawBufferSize(pBufferForArgs, AlignedByteOffsetForArgs, sizeof(VkDispatchIndirectCommand)))
@@ -1368,7 +1278,7 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::IASetInputLayout(ID3D11InputLayout* pInputLayout) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto inputLayout = static_cast<D3D11InputLayout*>(pInputLayout);
     
@@ -1390,7 +1300,7 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY Topology) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (m_state.ia.primitiveTopology != Topology) {
       m_state.ia.primitiveTopology = Topology;
@@ -1405,7 +1315,7 @@ namespace dxvk {
           ID3D11Buffer* const*              ppVertexBuffers,
     const UINT*                             pStrides,
     const UINT*                             pOffsets) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     for (uint32_t i = 0; i < NumBuffers; i++) {
       auto newBuffer = static_cast<D3D11Buffer*>(ppVertexBuffers[i]);
@@ -1431,7 +1341,7 @@ namespace dxvk {
           ID3D11Buffer*                     pIndexBuffer,
           DXGI_FORMAT                       Format,
           UINT                              Offset) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto newBuffer = static_cast<D3D11Buffer*>(pIndexBuffer);
     bool needsUpdate = m_state.ia.indexBuffer.buffer != newBuffer;
@@ -1452,14 +1362,14 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::IAGetInputLayout(ID3D11InputLayout** ppInputLayout) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     *ppInputLayout = m_state.ia.inputLayout.ref();
   }
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::IAGetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY* pTopology) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     *pTopology = m_state.ia.primitiveTopology;
   }
@@ -1471,7 +1381,7 @@ namespace dxvk {
           ID3D11Buffer**                    ppVertexBuffers,
           UINT*                             pStrides,
           UINT*                             pOffsets) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     for (uint32_t i = 0; i < NumBuffers; i++) {
       const bool inRange = StartSlot + i < m_state.ia.vertexBuffers.size();
@@ -1501,7 +1411,7 @@ namespace dxvk {
           ID3D11Buffer**                    ppIndexBuffer,
           DXGI_FORMAT*                      pFormat,
           UINT*                             pOffset) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppIndexBuffer != nullptr)
       *ppIndexBuffer = m_state.ia.indexBuffer.buffer.ref();
@@ -1518,7 +1428,7 @@ namespace dxvk {
           ID3D11VertexShader*               pVertexShader,
           ID3D11ClassInstance* const*       ppClassInstances,
           UINT                              NumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto shader = static_cast<D3D11VertexShader*>(pVertexShader);
     
@@ -1537,7 +1447,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer* const*              ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers<DxbcProgramType::VertexShader>(
       m_state.vs.constantBuffers,
@@ -1552,7 +1462,7 @@ namespace dxvk {
           ID3D11Buffer* const*              ppConstantBuffers, 
     const UINT*                             pFirstConstant, 
     const UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers1<DxbcProgramType::VertexShader>(
       m_state.vs.constantBuffers,
@@ -1567,7 +1477,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView* const*  ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetShaderResources<DxbcProgramType::VertexShader>(
       m_state.vs.shaderResources,
@@ -1580,7 +1490,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState* const*        ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetSamplers<DxbcProgramType::VertexShader>(
       m_state.vs.samplers,
@@ -1593,7 +1503,7 @@ namespace dxvk {
           ID3D11VertexShader**              ppVertexShader,
           ID3D11ClassInstance**             ppClassInstances,
           UINT*                             pNumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppVertexShader != nullptr)
       *ppVertexShader = m_state.vs.shader.ref();
@@ -1607,7 +1517,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer**                    ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.vs.constantBuffers,
@@ -1623,7 +1533,7 @@ namespace dxvk {
           ID3D11Buffer**                    ppConstantBuffers, 
           UINT*                             pFirstConstant, 
           UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.vs.constantBuffers,
@@ -1638,7 +1548,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView**        ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetShaderResources(m_state.vs.shaderResources,
       StartSlot, NumViews, ppShaderResourceViews);
@@ -1649,7 +1559,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState**              ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetSamplers(m_state.vs.samplers,
       StartSlot, NumSamplers, ppSamplers);
@@ -1660,7 +1570,7 @@ namespace dxvk {
           ID3D11HullShader*                 pHullShader,
           ID3D11ClassInstance* const*       ppClassInstances,
           UINT                              NumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto shader = static_cast<D3D11HullShader*>(pHullShader);
     
@@ -1679,7 +1589,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView* const*  ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetShaderResources<DxbcProgramType::HullShader>(
       m_state.hs.shaderResources,
@@ -1692,7 +1602,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer* const*              ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers<DxbcProgramType::HullShader>(
       m_state.hs.constantBuffers,
@@ -1707,7 +1617,7 @@ namespace dxvk {
           ID3D11Buffer* const*              ppConstantBuffers, 
     const UINT*                             pFirstConstant, 
     const UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers1<DxbcProgramType::HullShader>(
       m_state.hs.constantBuffers,
@@ -1722,7 +1632,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState* const*        ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetSamplers<DxbcProgramType::HullShader>(
       m_state.hs.samplers,
@@ -1735,7 +1645,7 @@ namespace dxvk {
           ID3D11HullShader**                ppHullShader,
           ID3D11ClassInstance**             ppClassInstances,
           UINT*                             pNumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppHullShader != nullptr)
       *ppHullShader = m_state.hs.shader.ref();
@@ -1749,7 +1659,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer**                    ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.hs.constantBuffers,
@@ -1765,7 +1675,7 @@ namespace dxvk {
           ID3D11Buffer**                    ppConstantBuffers, 
           UINT*                             pFirstConstant, 
           UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.hs.constantBuffers,
@@ -1780,7 +1690,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView**        ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetShaderResources(m_state.hs.shaderResources,
       StartSlot, NumViews, ppShaderResourceViews);
@@ -1791,7 +1701,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState**              ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetSamplers(m_state.hs.samplers,
       StartSlot, NumSamplers, ppSamplers);
@@ -1802,7 +1712,7 @@ namespace dxvk {
           ID3D11DomainShader*               pDomainShader,
           ID3D11ClassInstance* const*       ppClassInstances,
           UINT                              NumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto shader = static_cast<D3D11DomainShader*>(pDomainShader);
     
@@ -1821,7 +1731,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView* const*  ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetShaderResources<DxbcProgramType::DomainShader>(
       m_state.ds.shaderResources,
@@ -1834,7 +1744,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer* const*              ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers<DxbcProgramType::DomainShader>(
       m_state.ds.constantBuffers,
@@ -1849,7 +1759,7 @@ namespace dxvk {
           ID3D11Buffer* const*              ppConstantBuffers,
     const UINT*                             pFirstConstant,
     const UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers1<DxbcProgramType::DomainShader>(
       m_state.ds.constantBuffers,
@@ -1864,7 +1774,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState* const*        ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetSamplers<DxbcProgramType::DomainShader>(
       m_state.ds.samplers,
@@ -1877,7 +1787,7 @@ namespace dxvk {
           ID3D11DomainShader**              ppDomainShader,
           ID3D11ClassInstance**             ppClassInstances,
           UINT*                             pNumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppDomainShader != nullptr)
       *ppDomainShader = m_state.ds.shader.ref();
@@ -1891,7 +1801,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer**                    ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.ds.constantBuffers,
@@ -1907,7 +1817,7 @@ namespace dxvk {
           ID3D11Buffer**                    ppConstantBuffers,
           UINT*                             pFirstConstant, 
           UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.ds.constantBuffers,
@@ -1922,7 +1832,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView**        ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetShaderResources(m_state.ds.shaderResources,
       StartSlot, NumViews, ppShaderResourceViews);
@@ -1933,7 +1843,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState**              ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetSamplers(m_state.ds.samplers,
       StartSlot, NumSamplers, ppSamplers);
@@ -1944,7 +1854,7 @@ namespace dxvk {
           ID3D11GeometryShader*             pShader,
           ID3D11ClassInstance* const*       ppClassInstances,
           UINT                              NumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto shader = static_cast<D3D11GeometryShader*>(pShader);
     
@@ -1963,7 +1873,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer* const*              ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers<DxbcProgramType::GeometryShader>(
       m_state.gs.constantBuffers,
@@ -1978,7 +1888,7 @@ namespace dxvk {
           ID3D11Buffer* const*              ppConstantBuffers,
     const UINT*                             pFirstConstant, 
     const UINT*                             pNumConstants) {  
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers1<DxbcProgramType::GeometryShader>(
       m_state.gs.constantBuffers,
@@ -1993,7 +1903,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView* const*  ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetShaderResources<DxbcProgramType::GeometryShader>(
       m_state.gs.shaderResources,
@@ -2006,7 +1916,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState* const*        ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetSamplers<DxbcProgramType::GeometryShader>(
       m_state.gs.samplers,
@@ -2019,7 +1929,7 @@ namespace dxvk {
           ID3D11GeometryShader**            ppGeometryShader,
           ID3D11ClassInstance**             ppClassInstances,
           UINT*                             pNumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppGeometryShader != nullptr)
       *ppGeometryShader = m_state.gs.shader.ref();
@@ -2033,7 +1943,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer**                    ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.gs.constantBuffers,
@@ -2049,7 +1959,7 @@ namespace dxvk {
           ID3D11Buffer**                    ppConstantBuffers, 
           UINT*                             pFirstConstant, 
           UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.gs.constantBuffers,
@@ -2064,7 +1974,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView**        ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetShaderResources(m_state.gs.shaderResources,
       StartSlot, NumViews, ppShaderResourceViews);
@@ -2075,7 +1985,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState**              ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetSamplers(m_state.gs.samplers,
       StartSlot, NumSamplers, ppSamplers);
@@ -2086,7 +1996,7 @@ namespace dxvk {
           ID3D11PixelShader*                pPixelShader,
           ID3D11ClassInstance* const*       ppClassInstances,
           UINT                              NumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto shader = static_cast<D3D11PixelShader*>(pPixelShader);
     
@@ -2105,7 +2015,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer* const*              ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers<DxbcProgramType::PixelShader>(
       m_state.ps.constantBuffers,
@@ -2120,7 +2030,7 @@ namespace dxvk {
           ID3D11Buffer* const*              ppConstantBuffers, 
     const UINT*                             pFirstConstant, 
     const UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers1<DxbcProgramType::PixelShader>(
       m_state.ps.constantBuffers,
@@ -2135,7 +2045,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView* const*  ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetShaderResources<DxbcProgramType::PixelShader>(
       m_state.ps.shaderResources,
@@ -2148,7 +2058,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState* const*        ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetSamplers<DxbcProgramType::PixelShader>(
       m_state.ps.samplers,
@@ -2161,7 +2071,7 @@ namespace dxvk {
           ID3D11PixelShader**               ppPixelShader,
           ID3D11ClassInstance**             ppClassInstances,
           UINT*                             pNumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppPixelShader != nullptr)
       *ppPixelShader = m_state.ps.shader.ref();
@@ -2175,7 +2085,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer**                    ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.ps.constantBuffers,
@@ -2191,7 +2101,7 @@ namespace dxvk {
           ID3D11Buffer**                    ppConstantBuffers,
           UINT*                             pFirstConstant, 
           UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.ps.constantBuffers,
@@ -2206,7 +2116,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView**        ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetShaderResources(m_state.ps.shaderResources,
       StartSlot, NumViews, ppShaderResourceViews);
@@ -2217,7 +2127,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState**              ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetSamplers(m_state.ps.samplers,
       StartSlot, NumSamplers, ppSamplers);
@@ -2228,7 +2138,7 @@ namespace dxvk {
           ID3D11ComputeShader*              pComputeShader,
           ID3D11ClassInstance* const*       ppClassInstances,
           UINT                              NumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto shader = static_cast<D3D11ComputeShader*>(pComputeShader);
     
@@ -2247,7 +2157,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer* const*              ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers<DxbcProgramType::ComputeShader>(
       m_state.cs.constantBuffers,
@@ -2262,7 +2172,7 @@ namespace dxvk {
           ID3D11Buffer* const*              ppConstantBuffers, 
     const UINT*                             pFirstConstant, 
     const UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetConstantBuffers1<DxbcProgramType::ComputeShader>(
       m_state.cs.constantBuffers,
@@ -2277,7 +2187,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView* const*  ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetShaderResources<DxbcProgramType::ComputeShader>(
       m_state.cs.shaderResources,
@@ -2290,7 +2200,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState* const*        ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     SetSamplers<DxbcProgramType::ComputeShader>(
       m_state.cs.samplers,
@@ -2304,7 +2214,7 @@ namespace dxvk {
           UINT                              NumUAVs,
           ID3D11UnorderedAccessView* const* ppUnorderedAccessViews,
     const UINT*                             pUAVInitialCounts) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (TestRtvUavHazards(0, nullptr, NumUAVs, ppUnorderedAccessViews))
       return;
@@ -2359,7 +2269,7 @@ namespace dxvk {
           ID3D11ComputeShader**             ppComputeShader,
           ID3D11ClassInstance**             ppClassInstances,
           UINT*                             pNumClassInstances) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppComputeShader != nullptr)
       *ppComputeShader = m_state.cs.shader.ref();
@@ -2373,7 +2283,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumBuffers,
           ID3D11Buffer**                    ppConstantBuffers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.cs.constantBuffers,
@@ -2389,7 +2299,7 @@ namespace dxvk {
           ID3D11Buffer**                    ppConstantBuffers, 
           UINT*                             pFirstConstant, 
           UINT*                             pNumConstants) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetConstantBuffers(
       m_state.cs.constantBuffers,
@@ -2404,7 +2314,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumViews,
           ID3D11ShaderResourceView**        ppShaderResourceViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetShaderResources(m_state.cs.shaderResources,
       StartSlot, NumViews, ppShaderResourceViews);
@@ -2415,7 +2325,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumSamplers,
           ID3D11SamplerState**              ppSamplers) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     GetSamplers(m_state.cs.samplers,
       StartSlot, NumSamplers, ppSamplers);
@@ -2426,7 +2336,7 @@ namespace dxvk {
           UINT                              StartSlot,
           UINT                              NumUAVs,
           ID3D11UnorderedAccessView**       ppUnorderedAccessViews) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     for (uint32_t i = 0; i < NumUAVs; i++) {
       ppUnorderedAccessViews[i] = StartSlot + i < m_state.cs.unorderedAccessViews.size()
@@ -2454,7 +2364,7 @@ namespace dxvk {
           UINT                              NumUAVs,
           ID3D11UnorderedAccessView* const* ppUnorderedAccessViews,
     const UINT*                             pUAVInitialCounts) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (TestRtvUavHazards(NumRTVs, ppRenderTargetViews, NumUAVs, ppUnorderedAccessViews))
       return;
@@ -2535,7 +2445,7 @@ namespace dxvk {
           ID3D11BlendState*                 pBlendState,
     const FLOAT                             BlendFactor[4],
           UINT                              SampleMask) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto blendState = static_cast<D3D11BlendState*>(pBlendState);
     
@@ -2559,7 +2469,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::OMSetDepthStencilState(
           ID3D11DepthStencilState*          pDepthStencilState,
           UINT                              StencilRef) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto depthStencilState = static_cast<D3D11DepthStencilState*>(pDepthStencilState);
     
@@ -2579,7 +2489,7 @@ namespace dxvk {
           UINT                              NumViews,
           ID3D11RenderTargetView**          ppRenderTargetViews,
           ID3D11DepthStencilView**          ppDepthStencilView) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppRenderTargetViews != nullptr) {
       for (UINT i = 0; i < NumViews; i++) {
@@ -2603,7 +2513,7 @@ namespace dxvk {
           ID3D11UnorderedAccessView**       ppUnorderedAccessViews) {
     OMGetRenderTargets(NumRTVs, ppRenderTargetViews, ppDepthStencilView);
     
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppUnorderedAccessViews != nullptr) {
       for (UINT i = 0; i < NumUAVs; i++) {
@@ -2619,7 +2529,7 @@ namespace dxvk {
           ID3D11BlendState**                ppBlendState,
           FLOAT                             BlendFactor[4],
           UINT*                             pSampleMask) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppBlendState != nullptr)
       *ppBlendState = ref(m_state.om.cbState);
@@ -2635,7 +2545,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::OMGetDepthStencilState(
           ID3D11DepthStencilState**         ppDepthStencilState,
           UINT*                             pStencilRef) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppDepthStencilState != nullptr)
       *ppDepthStencilState = ref(m_state.om.dsState);
@@ -2646,7 +2556,7 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::RSSetState(ID3D11RasterizerState* pRasterizerState) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     auto rasterizerState = static_cast<D3D11RasterizerState*>(pRasterizerState);
     
@@ -2675,7 +2585,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::RSSetViewports(
           UINT                              NumViewports,
     const D3D11_VIEWPORT*                   pViewports) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (unlikely(NumViewports > m_state.rs.viewports.size()))
       return;
@@ -2704,7 +2614,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::RSSetScissorRects(
           UINT                              NumRects,
     const D3D11_RECT*                       pRects) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (unlikely(NumRects > m_state.rs.scissors.size()))
       return;
@@ -2737,7 +2647,7 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::RSGetState(ID3D11RasterizerState** ppRasterizerState) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (ppRasterizerState != nullptr)
       *ppRasterizerState = ref(m_state.rs.state);
@@ -2747,7 +2657,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::RSGetViewports(
           UINT*                             pNumViewports,
           D3D11_VIEWPORT*                   pViewports) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     uint32_t numWritten = m_state.rs.numViewports;
 
     if (pViewports) {
@@ -2774,7 +2684,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::RSGetScissorRects(
           UINT*                             pNumRects,
           D3D11_RECT*                       pRects) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     uint32_t numWritten = m_state.rs.numScissors;
     
     if (pRects) {
@@ -2800,7 +2710,7 @@ namespace dxvk {
           UINT                              NumBuffers,
           ID3D11Buffer* const*              ppSOTargets,
     const UINT*                             pOffsets) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     for (uint32_t i = 0; i < NumBuffers; i++) {
       D3D11Buffer* buffer = static_cast<D3D11Buffer*>(ppSOTargets[i]);
@@ -2826,7 +2736,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11DeviceContext::SOGetTargets(
           UINT                              NumBuffers,
           ID3D11Buffer**                    ppSOTargets) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     for (uint32_t i = 0; i < NumBuffers; i++) {
       ppSOTargets[i] = i < m_state.so.targets.size()
@@ -2840,7 +2750,7 @@ namespace dxvk {
           UINT                              NumBuffers,
           ID3D11Buffer**                    ppSOTargets,
           UINT*                             pOffsets) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     for (uint32_t i = 0; i < NumBuffers; i++) {
       const bool inRange = i < m_state.so.targets.size();
@@ -2910,7 +2820,7 @@ namespace dxvk {
     const VkImageSubresourceRange*  pSubresources,
           VkImageLayout             OldLayout,
           VkImageLayout             NewLayout) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     // Get the underlying D3D11 resource
     Com<ID3D11Resource> resource;

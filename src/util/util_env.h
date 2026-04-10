@@ -121,6 +121,16 @@ namespace dxvk::env {
    */
   std::string getExePath();
 
+  /**
+   * \brief Checks whether the current process is a helper/launcher
+   *
+   * Used for obvious helper executables such as crash handlers,
+   * launchers, reporters, installers, and similar side processes
+   * that may load D3D11/DXGI but should not run the Remix frontend.
+   * \returns True if the current process should use native system DLLs
+   */
+  bool shouldBypassRemixForCurrentProcess();
+
   // NV-DXVK start
 
   /**

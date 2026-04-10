@@ -8,8 +8,7 @@ namespace dxvk {
     const D3D11_QUERY_DESC1& desc)
   : D3D11DeviceChild<ID3D11Query1>(device),
     m_desc(desc),
-    m_state(D3D11_VK_QUERY_INITIAL),
-    m_d3d10(this) {
+    m_state(D3D11_VK_QUERY_INITIAL) {
     Rc<DxvkDevice> dxvkDevice = m_parent->GetDXVKDevice();
 
     switch (m_desc.Query) {
@@ -50,8 +49,7 @@ namespace dxvk {
       case D3D11_QUERY_SO_OVERFLOW_PREDICATE:
       case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0:
         // FIXME it is technically incorrect to map
-        // SO_OVERFLOW_PREDICATE to the first stream,
-        // but this is good enough for D3D10 behaviour
+        // SO_OVERFLOW_PREDICATE to the first stream
         m_query[0] = dxvkDevice->createGpuQuery(
           VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT, 0, 0);
         break;
@@ -100,22 +98,9 @@ namespace dxvk {
       return S_OK;
     }
     
-    if (riid == __uuidof(IUnknown)
-     || riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10Asynchronous)
-     || riid == __uuidof(ID3D10Query)) {
-      *ppvObject = ref(&m_d3d10);
-      return S_OK;
-    }
-    
     if (m_desc.Query == D3D11_QUERY_OCCLUSION_PREDICATE) {
       if (riid == __uuidof(ID3D11Predicate)) {
         *ppvObject = AsPredicate(ref(this));
-        return S_OK;
-      }
-
-      if (riid == __uuidof(ID3D10Predicate)) {
-        *ppvObject = ref(&m_d3d10);
         return S_OK;
       }
     }
@@ -235,8 +220,14 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Query::GetData(
           void*                             pData,
           UINT                              GetDataFlags) {
+    // Return S_FALSE (pending) rather than DXGI_ERROR_INVALID_CALL when the
+    // query hasn't been ended yet. Real D3D11 returns DXGI_ERROR_INVALID_CALL
+    // here too, but UE4's VERIFYD3D11RESULT asserts on it. S_FALSE is safe:
+    // UE4 retries without blocking when bWait=false, and with RT running the
+    // GPU finishes queries later than expected, so the state transitions
+    // legitimately lag behind CPU polling.
     if (m_state != D3D11_VK_QUERY_ENDED)
-      return DXGI_ERROR_INVALID_CALL;
+      return S_FALSE;
 
     if (m_resetCtr != 0u)
       return S_FALSE;
@@ -245,7 +236,7 @@ namespace dxvk {
       DxvkGpuEventStatus status = m_event[0]->test();
 
       if (status == DxvkGpuEventStatus::Invalid)
-        return DXGI_ERROR_INVALID_CALL;
+        return S_FALSE;
       
       bool signaled = status == DxvkGpuEventStatus::Signaled;
 
@@ -261,7 +252,7 @@ namespace dxvk {
 
         if (status == DxvkGpuQueryStatus::Invalid
          || status == DxvkGpuQueryStatus::Failed)
-          return DXGI_ERROR_INVALID_CALL;
+          return S_FALSE;
         
         if (status == DxvkGpuQueryStatus::Pending)
           return S_FALSE;

@@ -2,7 +2,12 @@
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
 #include "d3d11_texture.h"
-#include "d3d11_trace.h"
+
+#include <fstream>
+static void immLog(const char* msg) {
+  static std::ofstream f("d3d11_device_debug.log", std::ios::app);
+  if (f.is_open()) { f << msg << std::endl; f.flush(); }
+}
 
 constexpr static uint32_t MinFlushIntervalUs = 750;
 constexpr static uint32_t IncFlushIntervalUs = 250;
@@ -11,41 +16,14 @@ constexpr static uint32_t MaxPendingSubmits  = 6;
 constexpr static VkDeviceSize MaxImplicitDiscardSize = 256ull << 10;
 
 namespace dxvk {
-
-  namespace {
-
-    Rc<DxvkContext> CreateImmediateContextExecutionContext(
-      D3D11Device*            parent,
-      const Rc<DxvkDevice>&   device) {
-      if (parent->GetOptions()->enableRemix
-       && parent->GetOptions()->useRtxContext) {
-        parent->SetImmediateContextUsesRtx(false);
-        Logger::warn("D3D11: Using standard DXVK immediate context; the auxiliary RTX command stream will be armed only after required transforms are discovered.");
-        D3D11EarlyTrace("D3D11ImmediateContext using standard DXVK context; auxiliary RTX command stream is deferred until transforms are discovered for experimental DX11 Remix path");
-        return device->createContext();
-      }
-
-      if (parent->GetOptions()->enableRemix) {
-        parent->SetImmediateContextUsesRtx(false);
-        Logger::warn("D3D11: Using standard DXVK immediate context because d3d11.useRtxContext is disabled.");
-        D3D11EarlyTrace("D3D11ImmediateContext using standard DXVK context for experimental DX11 Remix path");
-      } else {
-        parent->SetImmediateContextUsesRtx(false);
-        D3D11EarlyTrace("D3D11ImmediateContext using standard DXVK context");
-      }
-
-      return device->createContext();
-    }
-
-  }
   
   D3D11ImmediateContext::D3D11ImmediateContext(
           D3D11Device*    pParent,
     const Rc<DxvkDevice>& Device)
   : D3D11DeviceContext(pParent, Device, DxvkCsChunkFlag::SingleUse),
-    m_csThread(Device, CreateImmediateContextExecutionContext(pParent, Device)),
+    m_csThread(Device, Device->createRtxContext()),
     m_videoContext(this, Device) {
-    D3D11EarlyTrace("D3D11ImmediateContext ctor begin");
+    immLog("[ImmCtx] ctor: csThread + videoContext init done");
     EmitCs([
       cDevice                 = m_device,
       cRelaxedBarriers        = pParent->GetOptions()->relaxedBarriers,
@@ -63,10 +41,13 @@ namespace dxvk {
 
       ctx->setBarrierControl(barrierControl);
     });
-    D3D11EarlyTrace("D3D11ImmediateContext ctor after EmitCs");
     
+    immLog("[ImmCtx] ctor: calling ClearState");
     ClearState();
-    D3D11EarlyTrace("D3D11ImmediateContext ctor complete");
+
+    immLog("[ImmCtx] ctor: calling m_rtx.Initialize");
+    m_rtx.Initialize();
+    immLog("[ImmCtx] ctor: complete");
   }
   
   
@@ -135,7 +116,7 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11ImmediateContext::Begin(ID3D11Asynchronous* pAsync) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (unlikely(!pAsync))
       return;
@@ -153,7 +134,7 @@ namespace dxvk {
 
 
   void STDMETHODCALLTYPE D3D11ImmediateContext::End(ID3D11Asynchronous* pAsync) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (unlikely(!pAsync))
       return;
@@ -194,7 +175,7 @@ namespace dxvk {
     if (hEvent)
       SignalEvent(hEvent);
     
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
     
     if (m_csIsBusy || !m_csChunk->empty()) {
       // Add commands to flush the threaded
@@ -231,7 +212,7 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11ImmediateContext::ExecuteCommandList(
           ID3D11CommandList*  pCommandList,
           BOOL                RestoreContextState) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     auto commandList = static_cast<D3D11CommandList*>(pCommandList);
     
@@ -275,7 +256,7 @@ namespace dxvk {
           D3D11_MAP                   MapType,
           UINT                        MapFlags,
           D3D11_MAPPED_SUBRESOURCE*   pMappedResource) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     if (unlikely(!pResource))
       return E_INVALIDARG;
@@ -314,7 +295,7 @@ namespace dxvk {
       pResource->GetType(&resourceDim);
 
       if (resourceDim != D3D11_RESOURCE_DIMENSION_BUFFER) {
-        D3D10DeviceLock lock = LockContext();
+        D3D11DeviceLock lock = LockContext();
         UnmapImage(GetCommonTexture(pResource), Subresource);
       }
     }
@@ -698,7 +679,7 @@ namespace dxvk {
 
 
   void D3D11ImmediateContext::SynchronizeCsThread(uint64_t SequenceNumber) {
-    D3D10DeviceLock lock = LockContext();
+    D3D11DeviceLock lock = LockContext();
 
     // Dispatch current chunk so that all commands
     // recorded prior to this function will be run

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <mutex>
-
 #include "d3d11_texture.h"
 
 #include "../dxvk/hud/dxvk_hud.h"
@@ -51,10 +49,6 @@ namespace dxvk {
 
     UINT STDMETHODCALLTYPE GetFrameLatency();
 
-                Rc<DxvkDevice> GetDxvkDevice() const {
-                        return m_device;
-                }
-
     HANDLE STDMETHODCALLTYPE GetFrameLatencyEvent();
 
     HRESULT STDMETHODCALLTYPE ChangeProperties(
@@ -81,7 +75,7 @@ namespace dxvk {
 
   private:
 
-                std::mutex m_presentMutex;
+    friend LRESULT CALLBACK D3D11SwapChainWndProc(HWND, UINT, WPARAM, LPARAM);
 
     enum BindingIds : uint32_t {
       Image = 0,
@@ -102,6 +96,7 @@ namespace dxvk {
 
     Rc<DxvkImage>             m_swapImage;
     Rc<DxvkImageView>         m_swapImageView;
+        Rc<DxvkImageView>         m_swapImageRtView;
     Rc<DxvkSwapchainBlitter>  m_blitter;
 
     Rc<hud::Hud>              m_hud;
@@ -119,6 +114,8 @@ namespace dxvk {
 
     bool                    m_dirty = true;
     bool                    m_vsync = true;
+        uint32_t                m_lastPresentDrawCount = 0;
+    WNDPROC                 m_prevWndProc = nullptr;
 
     double                  m_displayRefreshRate = 0.0;
 
@@ -128,11 +125,7 @@ namespace dxvk {
             D3D11ImmediateContext*  pContext,
       const vk::PresenterSync&      Sync,
             uint32_t                FrameId,
-            uint32_t                ImageIndex,
-            bool                    useRemixPresentPath,
-            bool                    incrementPresentCount,
-            bool                    useReflexPresentMarkers,
-            uint64_t                currentReflexFrameId);
+            bool                    IsPrimary);
 
     void SynchronizePresent();
 

@@ -48,6 +48,18 @@ struct D3D9FixedFunctionVS;
 struct D3D9FixedFunctionPS;
 struct ReplacementInstance;
 
+struct ShaderProgramInfo {
+  uint32_t m_majorVersion = 0;
+  uint32_t m_minorVersion = 0;
+
+  ShaderProgramInfo() = default;
+  ShaderProgramInfo(uint32_t major, uint32_t minor)
+    : m_majorVersion{major}, m_minorVersion{minor} {}
+
+  uint32_t majorVersion() const { return m_majorVersion; }
+  uint32_t minorVersion() const { return m_minorVersion; }
+};
+
 using RasterBuffer = GeometryBuffer<Raster>;
 using RaytraceBuffer = GeometryBuffer<Raytrace>;
 
@@ -458,6 +470,7 @@ struct DrawCallTransforms {
   Matrix4 worldToView = Matrix4();
   Matrix4 viewToProjection = Matrix4();
   Matrix4 textureTransform = Matrix4();
+  bool usedViewportFallbackProjection = false;
   bool enableClipPlane = false;
   Vector4 clipPlane{ 0.f };
   TexGenMode texgenMode = TexGenMode::None;
@@ -633,6 +646,10 @@ struct DrawCallState {
   DxsoProgramInfo programmableVertexShaderInfo;
   DxsoProgramInfo programmablePixelShaderInfo;
 
+  // D3D11 shader model version — valid only when usesVertex/PixelShader is set.
+  ShaderProgramInfo vertexShaderInfo;
+  ShaderProgramInfo pixelShaderInfo;
+
   float minZ = 0.0f;
   float maxZ = 1.0f;
 
@@ -718,7 +735,7 @@ private:
   friend class RtxContext;
   friend class SceneManager;
   friend struct D3D9Rtx;
-  friend struct D3D11Rtx;
+  friend class D3D11Rtx;
   friend class TerrainBaker;
   friend struct RemixAPIPrivateAccessor;
   friend class RtxParticleSystemManager;

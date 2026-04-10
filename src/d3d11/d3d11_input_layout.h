@@ -2,23 +2,23 @@
 
 #include "d3d11_device_child.h"
 
-#include "../d3d10/d3d10_input_layout.h"
-
-#include <string>
+#include <vector>
+#include <cstring>
 
 namespace dxvk {
   
   class D3D11Device;
-  
-  // NV-DXVK start: Preserve original D3D11 semantic names alongside Vulkan
-  // vertex attributes so the RTX capture path can resolve attributes by
-  // semantic instead of guessing from vertex format.
-  struct D3D11SemanticInfo {
-    std::string name;
-    uint32_t index = 0;
+
+  // Per-element descriptor stored alongside vertex attribute data for RTX geometry routing.
+  struct D3D11RtxSemantic {
+    char     name[32];   // Upper-cased semantic name (POSITION, NORMAL, TEXCOORD, COLOR)
+    uint32_t index;      // Semantic index
+    uint32_t inputSlot;  // D3D11 vertex buffer input slot
+    uint32_t byteOffset; // Byte offset within each vertex stride
+    VkFormat format;     // Translated Vulkan vertex format
+    bool     perInstance; // true if D3D11_INPUT_PER_INSTANCE_DATA
   };
-  // NV-DXVK end
-  
+
   class D3D11InputLayout : public D3D11DeviceChild<ID3D11InputLayout> {
     
   public:
@@ -28,9 +28,7 @@ namespace dxvk {
             uint32_t              numAttributes,
       const DxvkVertexAttribute*  pAttributes,
             uint32_t              numBindings,
-      const DxvkVertexBinding*    pBindings,
-      const D3D11SemanticInfo*    pSemantics = nullptr,
-            uint32_t              numSemantics = 0);
+      const DxvkVertexBinding*    pBindings);
     
     ~D3D11InputLayout();
     
@@ -43,35 +41,19 @@ namespace dxvk {
     
     bool Compare(
       const D3D11InputLayout*     pOther) const;
-
-    const std::vector<DxvkVertexAttribute>& GetAttributes() const {
-      return m_attributes;
+    void SetRtxSemantics(std::vector<D3D11RtxSemantic>&& semantics) {
+      m_rtxSemantics = std::move(semantics);
     }
 
-    const std::vector<DxvkVertexBinding>& GetBindings() const {
-      return m_bindings;
-    }
-
-    // NV-DXVK start: Expose semantic info for RTX attribute resolution
-    const std::vector<D3D11SemanticInfo>& GetSemantics() const {
-      return m_semantics;
-    }
-    // NV-DXVK end
-    
-    D3D10InputLayout* GetD3D10Iface() {
-      return &m_d3d10;
+    const std::vector<D3D11RtxSemantic>& GetRtxSemantics() const {
+      return m_rtxSemantics;
     }
     
   private:
     
     std::vector<DxvkVertexAttribute> m_attributes;
     std::vector<DxvkVertexBinding>   m_bindings;
-    // NV-DXVK start: Semantic name storage
-    std::vector<D3D11SemanticInfo>   m_semantics;
-    // NV-DXVK end
-
-    D3D10InputLayout m_d3d10;
-    
+    std::vector<D3D11RtxSemantic>    m_rtxSemantics;
   };
   
 }

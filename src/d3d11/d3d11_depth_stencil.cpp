@@ -7,7 +7,7 @@ namespace dxvk {
           D3D11Device*              device,
     const D3D11_DEPTH_STENCIL_DESC& desc)
   : D3D11StateObject<ID3D11DepthStencilState>(device),
-    m_desc(desc), m_d3d10(this) {
+    m_desc(desc) {
     m_state.enableDepthTest   = desc.DepthEnable;
     m_state.enableDepthWrite  = desc.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ALL;
     m_state.enableStencilTest = desc.StencilEnable;
@@ -31,12 +31,6 @@ namespace dxvk {
     if (riid == __uuidof(IUnknown)
      || riid == __uuidof(ID3D11DeviceChild)
      || riid == __uuidof(ID3D11DepthStencilState)) {
-      *ppvObject = ref(this);
-      return S_OK;
-    }
-
-    if (riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10DepthStencilState)) {
       *ppvObject = ref(this);
       return S_OK;
     }

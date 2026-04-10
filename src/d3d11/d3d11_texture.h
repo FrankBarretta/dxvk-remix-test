@@ -3,8 +3,6 @@
 #include "../dxvk/dxvk_cs.h"
 #include "../dxvk/dxvk_device.h"
 
-#include "../d3d10/d3d10_texture.h"
-
 #include "d3d11_device_child.h"
 #include "d3d11_interfaces.h"
 #include "d3d11_resource.h"
@@ -188,8 +186,6 @@ namespace dxvk {
     Rc<DxvkImage> GetImage() const {
       return m_image;
     }
-
-    void SetupForRtx(const D3D11_SUBRESOURCE_DATA* pInitialData);
     
     /**
      * \brief Mapped subresource buffer
@@ -575,19 +571,12 @@ namespace dxvk {
     D3D11CommonTexture* GetCommonTexture() {
       return &m_texture;
     }
-
-    D3D10Texture1D* GetD3D10Iface() {
-      return &m_d3d10;
-    }
-    
   private:
     
     D3D11CommonTexture    m_texture;
     D3D11VkInteropSurface m_interop;
     D3D11DXGISurface      m_surface;
     D3D11DXGIResource     m_resource;
-    D3D10Texture1D        m_d3d10;
-    
   };
   
   
@@ -629,19 +618,12 @@ namespace dxvk {
     D3D11CommonTexture* GetCommonTexture() {
       return &m_texture;
     }
-    
-    D3D10Texture2D* GetD3D10Iface() {
-      return &m_d3d10;
-    }
-
   private:
     
     D3D11CommonTexture    m_texture;
     D3D11VkInteropSurface m_interop;
     D3D11DXGISurface      m_surface;
     D3D11DXGIResource     m_resource;
-    D3D10Texture2D        m_d3d10;
-    
   };
   
   
@@ -677,18 +659,11 @@ namespace dxvk {
     D3D11CommonTexture* GetCommonTexture() {
       return &m_texture;
     }
-    
-    D3D10Texture3D* GetD3D10Iface() {
-      return &m_d3d10;
-    }
-
   private:
     
     D3D11CommonTexture    m_texture;
     D3D11VkInteropSurface m_interop;
     D3D11DXGIResource     m_resource;
-    D3D10Texture3D        m_d3d10;
-    
   };
   
   

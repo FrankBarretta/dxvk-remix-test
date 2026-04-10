@@ -2,191 +2,107 @@
 
 #include "d3d11_include.h"
 
-#include <atomic>
-#include <mutex>
-
-#include "../dxvk/dxvk_cs.h"
-#include "../dxvk/dxvk_image.h"
-#include "../dxvk/rtx_render/rtx_context.h"
+#include "../dxvk/rtx_render/rtx_types.h"
+#include "../dxvk/rtx_render/rtx_hashing.h"
+#include "../dxvk/rtx_render/rtx_materials.h"
+#include "../dxvk/dxvk_buffer.h"
+#include "../util/util_matrix.h"
 #include "../util/util_threadpool.h"
 
 namespace dxvk {
-  class D3D11Buffer;
-  class D3D11Device;
+
   class D3D11DeviceContext;
-  class D3D11ImmediateContext;
 
-  struct D3D11Rtx {
-    inline static const uint32_t kMaxConcurrentDraws = 2048;
-    using GeometryProcessor = WorkerThreadPool<kMaxConcurrentDraws>;
+  class D3D11Rtx {
+  public:
+    explicit D3D11Rtx(D3D11DeviceContext* pContext);
 
-    struct DrawContext {
-      bool indexed = false;
-      bool indirect = false;
-      uint32_t vertexCount = 0;
-      uint32_t indexCount = 0;
-      uint32_t instanceCount = 0;
-      uint32_t firstVertex = 0;
-      uint32_t firstIndex = 0;
-      int32_t vertexOffset = 0;
-      uint32_t firstInstance = 0;
-      D3D11Buffer* indirectArgsBuffer = nullptr;
-      uint32_t indirectArgsOffset = 0;
-    };
+    void Initialize();
+    void OnDraw(UINT vertexCount, UINT startVertex);
+    void OnDrawIndexed(UINT indexCount, UINT startIndex, INT baseVertex);
+    void OnDrawInstanced(UINT vertexCountPerInstance, UINT instanceCount, UINT startVertex, UINT startInstance);
+    void OnDrawIndexedInstanced(UINT indexCountPerInstance, UINT instanceCount, UINT startIndex, INT baseVertex, UINT startInstance);
 
-    explicit D3D11Rtx(D3D11Device* device);
-    ~D3D11Rtx();
+    // Must be called with the context lock held.
+    // EndFrame runs the RT pipeline writing output into backbuffer (called BEFORE recording the blit).
+    void EndFrame(const Rc<DxvkImage>& backbuffer);
+    // OnPresent registers the swapchain present image (called AFTER recording the blit).
+    void OnPresent(const Rc<DxvkImage>& swapchainImage);
 
-    bool IsEnabled() const {
-      return m_enabled;
-    }
-
-    bool HasRtxExecutionContext() const;
-
-    bool CanUseRtxExecutionContext() const {
-      return HasRtxExecutionContext() && !m_auxiliaryBackendFaulted.load(std::memory_order_relaxed);
-    }
-
-    bool HasProjectionMatrixThisFrame() const {
-      return m_hasProjectionMatrixThisFrame.load(std::memory_order_relaxed);
-    }
-
-    bool HasSeenRequiredTransforms() const {
-      return m_hasSeenProjectionMatrix.load(std::memory_order_relaxed)
-          && m_hasSeenObjectToViewMatrix.load(std::memory_order_relaxed);
-    }
-
-    bool HasAuxiliaryPilotCaptureThisFrame() const {
-      return m_auxiliaryPilotCapturesThisFrame.load(std::memory_order_relaxed) != 0u;
-    }
-
-    bool HasPendingDrawsThisFrame() const {
-      return m_pendingDrawCalls != 0u;
-    }
-
-    bool HasCompletedAuxiliaryInjectRtxProbe() const {
-      return m_auxiliaryInjectRtxProbeCompleted.load(std::memory_order_relaxed);
-    }
-
-    bool WasUiOptionRefreshRequestedRecently() const;
-
-    void NotifyUiOptionRefreshRequested();
-
-    uint64_t GetCurrentReflexFrameId();
-
-    void NotifyDraw(const DrawContext& drawContext);
-
-        void CommitGeometryToRT(
-          D3D11DeviceContext*         context,
-          const DrawContext&                drawContext);
-
-    void ResetScreenResolution(
-            D3D11ImmediateContext*      context,
-            uint32_t                    width,
-            uint32_t                    height);
-
-    void EndFrame(
-            D3D11ImmediateContext*      context,
-      const Rc<DxvkImage>&              targetImage,
-            bool                        callInjectRtx = true);
-
-    void OnPresent(
-            D3D11ImmediateContext*      context,
-      const Rc<DxvkImage>&              targetImage);
-
-    void IncrementReflexFrameId();
-
-    void AdvanceFrameIdForPresentBypass();
-
-    template<typename T>
-    void EmitRtxCs(T command) {
-      if (m_rtxCsThread == nullptr)
-        return;
-
-      DxvkCsChunkRef chunk(m_rtxCsChunkPool.allocChunk(DxvkCsChunkFlag::SingleUse), &m_rtxCsChunkPool);
-
-      if (!chunk->push(command)) {
-        return;
-      }
-
-      m_rtxCsThread->dispatchChunk(std::move(chunk));
-    }
-
-    void SynchronizeRtxCs() {
-      if (m_rtxCsThread != nullptr)
-        m_rtxCsThread->synchronize(DxvkCsThread::SynchronizeAll);
-    }
+    uint32_t getDrawCallID() const { return m_drawCallID; }
 
   private:
-    bool EnsureRtxExecutionContextLocked();
+    static constexpr uint32_t kMaxConcurrentDraws = 6 * 1024;
+    using GeometryProcessor = WorkerThreadPool<kMaxConcurrentDraws>;
 
-    std::mutex m_mutex;
-    D3D11Device* const m_parent;
-    const std::unique_ptr<GeometryProcessor> m_geometryWorkers;
-    DxvkCsChunkPool m_rtxCsChunkPool;
-    Rc<RtxContext> m_rtxContext;
-    std::unique_ptr<DxvkCsThread> m_rtxCsThread;
-    bool m_enabled;
-    bool m_loggedExperimentalWarning = false;
-    bool m_loggedTelemetryOnlyWarning = false;
-    bool m_loggedTelemetryCompleteWarning = false;
-    bool m_loggedDeferredAuxiliaryContextWarning = false;
-    bool m_loggedInferredProjectionWarning = false;
-    bool m_loggedInferredObjectToViewWarning = false;
-    bool m_loggedMissingProjectionWarning = false;
-    bool m_loggedSkippedInjectWarning = false;
-    bool m_loggedAuxiliaryPilotModeWarning = false;
-    bool m_loggedAuxiliaryPilotFilterWarning = false;
-    bool m_loggedAuxiliaryPilotThrottleWarning = false;
-    bool m_loggedAuxiliaryPilotCompletedWarning = false;
-    bool m_loggedAuxiliaryPilotResetWarning = false;
-    bool m_loggedAuxiliarySceneCaptureEndFrameWarning = false;
-    bool m_loggedAuxiliaryResetScreenResolutionWarning = false;
-    bool m_loggedAuxiliaryOnPresentWarning = false;
-    bool m_loggedAuxiliaryFullEndFrameWarning = false;
-    bool m_loggedAuxiliaryFullEndFrameAfterProbeWarning = false;
-    bool m_loggedAuxiliaryInjectRtxProbeWarning = false;
-    bool m_loggedAuxiliaryInjectRtxAfterProbeWarning = false;
-    bool m_loggedAuxiliaryInjectRtxDisabledWarning = false;
-    bool m_loggedAuxiliaryInjectRtxProbeCompleteWarning = false;
-    bool m_loggedAuxiliaryBackendFaultWarning = false;
-    std::atomic<bool> m_geometryCaptureFaultedThisFrame = false;
-    std::atomic<bool> m_auxiliaryBackendFaulted = false;
-    std::atomic<bool> m_auxiliaryPilotResetPending = false;
-    std::atomic<bool> m_auxiliaryInjectRtxProbeCompleted = false;
-    std::atomic<bool> m_hasProjectionMatrixThisFrame = false;
-    std::atomic<bool> m_hasSeenProjectionMatrix = false;
-    std::atomic<bool> m_hasSeenObjectToViewMatrix = false;
-    std::atomic<uint32_t> m_auxiliaryPilotCapturesThisFrame = 0;
-    std::atomic<uint32_t> m_auxiliaryPilotSuccessfulCaptures = 0;
-    std::atomic<uint32_t> m_geometryCaptureFaultCount = 0;
-    std::atomic<uint64_t> m_lastAuxiliaryUiOptionRefreshFrame = UINT64_MAX;
-    std::atomic<uint32_t> m_dx11RejectedUnsupportedPilotDraws = 0;
-    std::atomic<uint32_t> m_dx11RejectedPilotNonIndexed = 0;
-    std::atomic<uint32_t> m_dx11RejectedPilotNonIndexedSingleInstance = 0;
-    std::atomic<uint32_t> m_dx11RejectedPilotNonIndexedInstanced = 0;
-    std::atomic<uint32_t> m_dx11RejectedPilotNonTriangle = 0;
-    std::atomic<uint32_t> m_dx11RejectedPilotZeroCount = 0;
-    std::atomic<uint32_t> m_dx11RejectedThrottleOrBudget = 0;
-    std::atomic<uint32_t> m_dx11RejectedMissingProjection = 0;
-    std::atomic<uint32_t> m_dx11RejectedMissingInputLayout = 0;
-    std::atomic<uint32_t> m_dx11RejectedUnsupportedTopology = 0;
-    std::atomic<uint32_t> m_dx11RejectedInvalidIndexBuffer = 0;
-    std::atomic<uint32_t> m_dx11RejectedMissingPosition = 0;
-    std::atomic<uint32_t> m_dx11RejectedInvalidVertexRange = 0;
-    uint64_t m_reflexFrameId = 0;
-    uint64_t m_lastAuxiliaryPilotCaptureFrame = UINT64_MAX;
-    uint64_t m_lastAuxiliaryInjectRtxCaptureFrame = UINT64_MAX;
-    uint64_t m_pendingDrawCalls = 0;
-    uint32_t m_screenWidth = 0;
-    uint32_t m_screenHeight = 0;
-    // NV-DXVK start: Cache last known good transforms across frames so draws
-    // are not rejected when the current frame's constant buffers lack valid
-    // projection or view matrices (e.g. during post-process passes).
-    Matrix4 m_cachedViewToProjection;
-    Matrix4 m_cachedObjectToView;
-    bool m_hasCachedViewToProjection = false;
-    bool m_hasCachedObjectToView = false;
-    // NV-DXVK end
+    D3D11DeviceContext*                  m_context;
+    std::unique_ptr<GeometryProcessor>   m_pGeometryWorkers;
+    uint32_t                             m_drawCallID = 0;
+
+    // Cached projection cbuffer location — found on first draw with a perspective
+    // matrix and reused for the rest of the frame. Reset to invalid in EndFrame.
+    uint32_t                             m_projSlot   = UINT32_MAX;
+    size_t                               m_projOffset = SIZE_MAX;
+    int                                  m_projStage  = -1;
+    // true when the engine stores matrices in column-major order (Unity, Godot).
+    // Detected during the projection scan — all subsequent reads are transposed.
+    bool                                 m_columnMajor = false;
+
+    // Cached view matrix cbuffer location — mirrors projection caching.
+    // Once a valid view matrix is found at (stage, slot, offset), subsequent
+    // draws re-read from the same location instead of rescanning.
+    uint32_t                             m_viewSlot   = UINT32_MAX;
+    size_t                               m_viewOffset = SIZE_MAX;
+    int                                  m_viewStage  = -1;
+
+    // Cached world matrix cbuffer location — reduces per-draw scanning.
+    // World matrices change every draw but often live at the same (stage, slot, offset).
+    uint32_t                             m_worldSlot   = UINT32_MAX;
+    int                                  m_worldStage  = -1;
+    size_t                               m_worldOffset = SIZE_MAX;
+
+    // Smoothed camera position — exponential moving average dampens
+    // micro-jitter from floating-point rounding in cbuffer matrix extraction.
+    Vector3                              m_smoothedCamPos = Vector3(0.0f);
+    bool                                 m_hasPrevCamPos  = false;
+
+    // Axis convention auto-detection — voting system accumulates evidence
+    // from projection and view matrices, then settles once confident.
+    // Re-checks during warmup to correct boot/loading screen misdetections.
+    bool                                 m_axisDetected = false;
+    bool                                 m_axisLogged   = false;
+    uint32_t                             m_axisDetectFrame = 0;
+
+    // Voting counters for Z-up vs Y-up and LH vs RH.
+    // Accumulate votes over multiple frames, settle when |votes| >= threshold.
+    int                                  m_zUpVotes     = 0;  // positive = Z-up, negative = Y-up
+    int                                  m_lhVotes      = 0;  // positive = LH, negative = RH
+    int                                  m_yFlipVotes   = 0;  // positive = flipped, negative = normal
+    bool                                 m_zUpSettled    = false;
+    bool                                 m_lhSettled     = false;
+    bool                                 m_yFlipSettled  = false;
+    static constexpr int kVoteThreshold  = 5; // votes needed to settle
+    mutable Rc<DxvkSampler>              m_defaultSampler;
+
+    // CPU-GPU pacing: flush the CS chunk every N draws to prevent the CPU
+    // from queuing unbounded work while the GPU is still on a prior batch.
+    // Without this, frame latency spikes and memory pressure builds from
+    // thousands of buffered DrawCallState objects.
+    static constexpr uint32_t kDrawsPerFlush = 256;
+    uint32_t                             m_drawsSinceFlush = 0;
+
+    Rc<DxvkSampler> getDefaultSampler() const;
+    void SubmitDraw(bool indexed, UINT count, UINT start, INT base,
+                    const Matrix4* instanceTransform = nullptr);
+    void SubmitInstancedDraw(bool indexed, UINT count, UINT start, INT base,
+                             UINT instanceCount, UINT startInstance);
+    DrawCallTransforms ExtractTransforms();
+    Future<GeometryHashes> ComputeGeometryHashes(const RasterGeometry& geo,
+                                                 uint32_t vertexCount,
+                                                 uint32_t hashStartVertex,
+                                                 uint32_t hashVertexCount) const;
+    void ClearMaterialTextures(LegacyMaterialData& mat) const;
+    void FillMaterialData(LegacyMaterialData& mat) const;
   };
+
 }

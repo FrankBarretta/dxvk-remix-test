@@ -36,7 +36,7 @@ namespace dxvk {
     if (!m_container->IsAnnotationEnabled())
       return -1;
 
-    D3D10DeviceLock lock = m_container->LockContext();
+    D3D11DeviceLock lock = m_container->LockContext();
 
     m_container->EmitCs([labelName = dxvk::str::fromws(Name)](DxvkContext *ctx) {
       VkDebugUtilsLabelEXT label;
@@ -59,7 +59,7 @@ namespace dxvk {
     if (!m_container->IsAnnotationEnabled())
       return -1;
 
-    D3D10DeviceLock lock = m_container->LockContext();
+    D3D11DeviceLock lock = m_container->LockContext();
 
     m_container->EmitCs([](DxvkContext *ctx) {
       ctx->endDebugLabel();
@@ -74,7 +74,7 @@ namespace dxvk {
     if (!m_container->IsAnnotationEnabled())
       return;
 
-    D3D10DeviceLock lock = m_container->LockContext();
+    D3D11DeviceLock lock = m_container->LockContext();
 
     m_container->EmitCs([labelName = dxvk::str::fromws(Name)](DxvkContext *ctx) {
       VkDebugUtilsLabelEXT label;

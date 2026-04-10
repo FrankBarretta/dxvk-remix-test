@@ -2,8 +2,6 @@
 
 #include "../dxvk/dxvk_device.h"
 
-#include "../d3d10/d3d10_blend.h"
-
 #include "d3d11_device_child.h"
 #include "d3d11_util.h"
 
@@ -36,10 +34,6 @@ namespace dxvk {
       const Rc<DxvkContext>&  ctx,
             UINT              sampleMask) const;
     
-    D3D10BlendState* GetD3D10Iface() {
-      return &m_d3d10;
-    }
-    
     static D3D11_BLEND_DESC1 PromoteDesc(
       const D3D11_BLEND_DESC*   pSrcDesc);
     
@@ -53,8 +47,6 @@ namespace dxvk {
     std::array<DxvkBlendMode, 8>  m_blendModes;
     DxvkMultisampleState          m_msState;
     DxvkLogicOpState              m_loState;
-
-    D3D10BlendState               m_d3d10;
     
     static DxvkBlendMode DecodeBlendMode(
       const D3D11_RENDER_TARGET_BLEND_DESC1& BlendDesc);

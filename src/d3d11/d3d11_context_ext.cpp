@@ -39,7 +39,7 @@ namespace dxvk {
           ID3D11Buffer*           pBufferForArgs,
           UINT                    ByteOffsetForArgs,
           UINT                    ByteStrideForArgs) {
-    D3D10DeviceLock lock = m_ctx->LockContext();
+    D3D11DeviceLock lock = m_ctx->LockContext();
     m_ctx->SetDrawBuffers(pBufferForArgs, nullptr);
     
     m_ctx->EmitCs([
@@ -57,7 +57,7 @@ namespace dxvk {
           ID3D11Buffer*           pBufferForArgs,
           UINT                    ByteOffsetForArgs,
           UINT                    ByteStrideForArgs) {
-    D3D10DeviceLock lock = m_ctx->LockContext();
+    D3D11DeviceLock lock = m_ctx->LockContext();
     m_ctx->SetDrawBuffers(pBufferForArgs, nullptr);
     
     m_ctx->EmitCs([
@@ -77,7 +77,7 @@ namespace dxvk {
           ID3D11Buffer*           pBufferForArgs,
           UINT                    ByteOffsetForArgs,
           UINT                    ByteStrideForArgs) {
-    D3D10DeviceLock lock = m_ctx->LockContext();
+    D3D11DeviceLock lock = m_ctx->LockContext();
     m_ctx->SetDrawBuffers(pBufferForArgs, pBufferForCount);
 
     m_ctx->EmitCs([
@@ -98,7 +98,7 @@ namespace dxvk {
           ID3D11Buffer*           pBufferForArgs,
           UINT                    ByteOffsetForArgs,
           UINT                    ByteStrideForArgs) {
-    D3D10DeviceLock lock = m_ctx->LockContext();
+    D3D11DeviceLock lock = m_ctx->LockContext();
     m_ctx->SetDrawBuffers(pBufferForArgs, pBufferForCount);
 
     m_ctx->EmitCs([
@@ -116,7 +116,7 @@ namespace dxvk {
           BOOL                    Enable,
           FLOAT                   MinDepthBounds,
           FLOAT                   MaxDepthBounds) {
-    D3D10DeviceLock lock = m_ctx->LockContext();
+    D3D11DeviceLock lock = m_ctx->LockContext();
 
     DxvkDepthBounds db;
     db.enableDepthBounds  = Enable;
@@ -131,7 +131,7 @@ namespace dxvk {
   
   void STDMETHODCALLTYPE D3D11DeviceContextExt::SetBarrierControl(
           UINT                    ControlFlags) {
-    D3D10DeviceLock lock = m_ctx->LockContext();
+    D3D11DeviceLock lock = m_ctx->LockContext();
     DxvkBarrierControlFlags flags;
     
     if (ControlFlags & D3D11_VK_BARRIER_CONTROL_IGNORE_WRITE_AFTER_WRITE)
@@ -148,7 +148,7 @@ namespace dxvk {
 
   bool STDMETHODCALLTYPE D3D11DeviceContextExt::LaunchCubinShaderNVX(IUnknown* hShader, uint32_t GridX, uint32_t GridY, uint32_t GridZ,
       const void* pParams, uint32_t ParamSize, void* const* pReadResources, uint32_t NumReadResources, void* const* pWriteResources, uint32_t NumWriteResources) {
-    D3D10DeviceLock lock = m_ctx->LockContext();
+    D3D11DeviceLock lock = m_ctx->LockContext();
 
     CubinShaderWrapper* cubinShader = static_cast<CubinShaderWrapper*>(hShader);
     CubinShaderLaunchInfo launchInfo;

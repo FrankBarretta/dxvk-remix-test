@@ -8,7 +8,7 @@ namespace dxvk {
           D3D11Device*        device,
     const D3D11_SAMPLER_DESC& desc)
   : D3D11StateObject<ID3D11SamplerState>(device),
-    m_desc(desc), m_d3d10(this) {
+    m_desc(desc) {
     DxvkSamplerCreateInfo info;
     
     // While D3D11_FILTER is technically an enum, its value bits
@@ -70,12 +70,6 @@ namespace dxvk {
      || riid == __uuidof(ID3D11DeviceChild)
      || riid == __uuidof(ID3D11SamplerState)) {
       *ppvObject = ref(this);
-      return S_OK;
-    }
-    
-    if (riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10SamplerState)) {
-      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
     

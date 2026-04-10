@@ -2,8 +2,6 @@
 
 #include "../dxvk/dxvk_device.h"
 
-#include "../d3d10/d3d10_view_rtv.h"
-
 #include "d3d11_device_child.h"
 #include "d3d11_view.h"
 
@@ -56,11 +54,6 @@ namespace dxvk {
         ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
         : VK_IMAGE_LAYOUT_GENERAL;
     }
-
-    D3D10RenderTargetView* GetD3D10Iface() {
-      return &m_d3d10;
-    }
-
     static HRESULT GetDescFromResource(
             ID3D11Resource*                   pResource,
             D3D11_RENDER_TARGET_VIEW_DESC1*   pDesc);
@@ -82,8 +75,6 @@ namespace dxvk {
     D3D11_RENDER_TARGET_VIEW_DESC1    m_desc;
     D3D11_VK_VIEW_INFO                m_info;
     Rc<DxvkImageView>                 m_view;
-    D3D10RenderTargetView             m_d3d10;
-    
   };
   
 }

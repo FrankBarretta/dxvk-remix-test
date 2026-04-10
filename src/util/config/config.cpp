@@ -952,6 +952,10 @@ namespace dxvk {
     { R"(\\Avatar\.exe$)", {{
       { "d3d9.invariantPosition",              "True" },
     }} },
+    /* D3D11 Remix: always enable the D3D11 Remix backend path */
+    { R"(.*)", {{
+      { "d3d11.enableRemix",                   "True" },
+    }} },
   }};
 
 

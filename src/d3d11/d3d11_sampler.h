@@ -2,8 +2,6 @@
 
 #include "../dxvk/dxvk_device.h"
 
-#include "../d3d10/d3d10_sampler.h"
-
 #include "d3d11_device_child.h"
 
 namespace dxvk {
@@ -31,11 +29,6 @@ namespace dxvk {
     Rc<DxvkSampler> GetDXVKSampler() const {
       return m_sampler;
     }
-
-    D3D10SamplerState* GetD3D10Iface() {
-      return &m_d3d10;
-    }
-    
     static HRESULT NormalizeDesc(
             D3D11_SAMPLER_DESC* pDesc);
     
@@ -43,8 +36,6 @@ namespace dxvk {
     
     D3D11_SAMPLER_DESC m_desc;
     Rc<DxvkSampler>    m_sampler;
-    D3D10SamplerState  m_d3d10;
-
     std::atomic<uint32_t> m_refCount = { 0u };
 
     static bool ValidateAddressMode(

@@ -2,8 +2,6 @@
 
 #include "../dxvk/dxvk_device.h"
 
-#include "../d3d10/d3d10_rasterizer.h"
-
 #include "d3d11_device_child.h"
 
 namespace dxvk {
@@ -40,11 +38,6 @@ namespace dxvk {
     
     void BindToContext(
       const Rc<DxvkContext>&  ctx);
-    
-    D3D10RasterizerState* GetD3D10Iface() {
-      return &m_d3d10;
-    }
-    
     static D3D11_RASTERIZER_DESC2 PromoteDesc(
       const D3D11_RASTERIZER_DESC*  pDesc);
     
@@ -59,8 +52,6 @@ namespace dxvk {
     D3D11_RASTERIZER_DESC2 m_desc;
     DxvkRasterizerState    m_state;
     DxvkDepthBias          m_depthBias;
-    D3D10RasterizerState   m_d3d10;
-    
   };
   
 }

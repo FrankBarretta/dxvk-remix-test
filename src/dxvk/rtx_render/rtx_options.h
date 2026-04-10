@@ -503,6 +503,10 @@ namespace dxvk {
                     "If true, input will not be passed to the game when the UI is active.\n"
                     "Can be toggled with Alt + Backspace", args.onChangeCallback = &blockInputToGameInUIOnChange, args.flags = RtxOptionFlags::NoSave);
 
+    RTX_OPTION("rtx", bool, useInputAssemblerNormals, true,
+               "When enabled, vertex normals from the D3D11 input layout (NORMAL semantic) are extracted and used in raytracing.\n"
+               "Disable if a game provides garbage normals in its vertex buffers — Remix will regenerate normals instead.");
+
     inline static const VirtualKeys kDefaultRemixMenuKeyBinds{ VirtualKey{VK_MENU},VirtualKey{'X'} };
     RTX_OPTION("rtx", VirtualKeys, remixMenuKeyBinds, kDefaultRemixMenuKeyBinds,
                "Hotkey to open the Remix menu.\n"

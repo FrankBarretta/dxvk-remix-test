@@ -2,49 +2,7 @@
 #include "d3d11_gdi.h"
 #include "d3d11_texture.h"
 
-#include <atomic>
-
-#include "../dxvk/imgui/dxvk_imgui.h"
-#include "../dxvk/rtx_render/rtx_constants.h"
-
 namespace dxvk {
-
-  namespace {
-
-    XXH64_hash_t calcTextureDescriptorHash(
-      const D3D11_COMMON_TEXTURE_DESC& desc,
-      D3D11_RESOURCE_DIMENSION         dimension,
-      DXGI_USAGE                       dxgiUsage) {
-      DxvkHashState state;
-      state.add(std::hash<UINT>()(desc.Width));
-      state.add(std::hash<UINT>()(desc.Height));
-      state.add(std::hash<UINT>()(desc.Depth));
-      state.add(std::hash<UINT>()(desc.MipLevels));
-      state.add(std::hash<UINT>()(desc.ArraySize));
-      state.add(std::hash<DXGI_FORMAT>()(desc.Format));
-      state.add(std::hash<UINT>()(desc.SampleDesc.Count));
-      state.add(std::hash<UINT>()(desc.SampleDesc.Quality));
-      state.add(std::hash<D3D11_USAGE>()(desc.Usage));
-      state.add(std::hash<UINT>()(desc.BindFlags));
-      state.add(std::hash<UINT>()(desc.CPUAccessFlags));
-      state.add(std::hash<UINT>()(desc.MiscFlags));
-      state.add(std::hash<D3D11_TEXTURE_LAYOUT>()(desc.TextureLayout));
-      state.add(std::hash<D3D11_RESOURCE_DIMENSION>()(dimension));
-      state.add(std::hash<DXGI_USAGE>()(dxgiUsage));
-      return state;
-    }
-
-    XXH64_hash_t calcRuntimeTextureFallbackHash(
-      const D3D11_COMMON_TEXTURE_DESC& desc,
-      D3D11_RESOURCE_DIMENSION         dimension,
-      DXGI_USAGE                       dxgiUsage) {
-      static std::atomic<uint64_t> s_textureHashCounter { 1ull };
-      const XXH64_hash_t descriptorHash = calcTextureDescriptorHash(desc, dimension, dxgiUsage);
-      const uint64_t uniqueCounter = s_textureHashCounter.fetch_add(1ull);
-      return XXH3_64bits_withSeed(&uniqueCounter, sizeof(uniqueCounter), descriptorHash);
-    }
-
-  }
   
   D3D11CommonTexture::D3D11CommonTexture(
           ID3D11Resource*             pInterface,
@@ -252,80 +210,14 @@ namespace dxvk {
     }
     
     if (vkImage == VK_NULL_HANDLE)
-      m_image = m_device->GetDXVKDevice()->createImage(
-        imageInfo,
-        memoryProperties,
-        DxvkMemoryStats::Category::AppTexture,
-        "D3D11 texture");
+      m_image = m_device->GetDXVKDevice()->createImage(imageInfo, memoryProperties, DxvkMemoryStats::Category::AppTexture, "d3d11 texture");
     else
       m_image = m_device->GetDXVKDevice()->createImageFromVkImage(imageInfo, vkImage);
   }
   
   
   D3D11CommonTexture::~D3D11CommonTexture() {
-    if (m_image != nullptr) {
-      if (m_image->getHash() != kEmptyHash)
-        ImGUI::ReleaseTexture(m_image->getHash());
-
-      if (m_image->getDescriptorHash() != kEmptyHash)
-        ImGUI::ReleaseTexture(m_image->getDescriptorHash());
-    }
-  }
-
-
-  void D3D11CommonTexture::SetupForRtx(const D3D11_SUBRESOURCE_DATA* pInitialData) {
-    if (m_image == nullptr)
-      return;
-
-    if (m_image->getDescriptorHash() == kEmptyHash) {
-      m_image->setDescriptorHash(calcTextureDescriptorHash(m_desc, m_dimension, m_dxgiUsage));
-    }
-
-    if (m_image->getHash() != kEmptyHash)
-      return;
-
-    const DxvkFormatInfo* formatInfo = imageFormatInfo(m_packedFormat);
-
-    if (pInitialData != nullptr && formatInfo != nullptr) {
-      XXH64_hash_t hash = kEmptyHash;
-      uint32_t subresource = 0u;
-
-      for (uint32_t layer = 0u; layer < m_desc.ArraySize; layer++) {
-        for (uint32_t mip = 0u; mip < m_desc.MipLevels; mip++, subresource++) {
-          const D3D11_SUBRESOURCE_DATA& initialData = pInitialData[subresource];
-          if (initialData.pSysMem == nullptr)
-            continue;
-
-          VkExtent3D extent = MipLevelExtent(mip);
-          const VkExtent3D blockCount = util::computeBlockCount(extent, formatInfo->blockSize);
-
-          size_t subresourceSize = 0u;
-          if (m_dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D) {
-            const size_t slicePitch = initialData.SysMemSlicePitch != 0u
-              ? size_t(initialData.SysMemSlicePitch)
-              : size_t(initialData.SysMemPitch) * size_t(blockCount.height);
-            subresourceSize = slicePitch * size_t(blockCount.depth);
-          } else if (m_dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
-            subresourceSize = size_t(initialData.SysMemPitch) * size_t(blockCount.height);
-          } else {
-            subresourceSize = size_t(formatInfo->elementSize) * size_t(blockCount.width);
-          }
-
-          if (subresourceSize != 0u) {
-            hash = XXH3_64bits_withSeed(initialData.pSysMem, subresourceSize, hash);
-          }
-        }
-      }
-
-      if (hash != kEmptyHash) {
-        m_image->setHash(hash);
-        return;
-      }
-    }
-
-    if (m_desc.BindFlags & (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) {
-      m_image->setHash(calcRuntimeTextureFallbackHash(m_desc, m_dimension, m_dxgiUsage));
-    }
+    
   }
   
   
@@ -705,11 +597,7 @@ namespace dxvk {
       memType |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
     
     MappedBuffer result;
-    result.buffer = m_device->GetDXVKDevice()->createBuffer(
-      info,
-      memType,
-      DxvkMemoryStats::Category::AppBuffer,
-      "D3D11 mapped texture buffer");
+    result.buffer = m_device->GetDXVKDevice()->createBuffer(info, memType, DxvkMemoryStats::Category::AppBuffer, "d3d11 texture staging");
     result.slice = result.buffer->getSliceHandle();
     return result;
   }
@@ -1026,8 +914,7 @@ namespace dxvk {
     m_texture (this, pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE1D, 0, VK_NULL_HANDLE),
     m_interop (this, &m_texture),
     m_surface (this, &m_texture),
-    m_resource(this),
-    m_d3d10   (this) {
+    m_resource(this) {
     
   }
   
@@ -1048,13 +935,6 @@ namespace dxvk {
      || riid == __uuidof(ID3D11Resource)
      || riid == __uuidof(ID3D11Texture1D)) {
       *ppvObject = ref(this);
-      return S_OK;
-    }
-    
-    if (riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10Resource)
-     || riid == __uuidof(ID3D10Texture1D)) {
-      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
     
@@ -1124,8 +1004,7 @@ namespace dxvk {
     m_texture (this, pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE2D, 0, VK_NULL_HANDLE),
     m_interop (this, &m_texture),
     m_surface (this, &m_texture),
-    m_resource(this),
-    m_d3d10   (this) {
+    m_resource(this) {
     
   }
 
@@ -1139,8 +1018,7 @@ namespace dxvk {
     m_texture (this, pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE2D, DxgiUsage, vkImage),
     m_interop (this, &m_texture),
     m_surface (this, &m_texture),
-    m_resource(this),
-    m_d3d10   (this) {
+    m_resource(this) {
     
   }
   
@@ -1162,13 +1040,6 @@ namespace dxvk {
      || riid == __uuidof(ID3D11Texture2D)
      || riid == __uuidof(ID3D11Texture2D1)) {
       *ppvObject = ref(this);
-      return S_OK;
-    }
-
-    if (riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10Resource)
-     || riid == __uuidof(ID3D10Texture2D)) {
-      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
 
@@ -1254,8 +1125,7 @@ namespace dxvk {
   : D3D11DeviceChild<ID3D11Texture3D1>(pDevice),
     m_texture (this, pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE3D, 0, VK_NULL_HANDLE),
     m_interop (this, &m_texture),
-    m_resource(this),
-    m_d3d10   (this) {
+    m_resource(this) {
     
   }
   
@@ -1277,13 +1147,6 @@ namespace dxvk {
      || riid == __uuidof(ID3D11Texture3D)
      || riid == __uuidof(ID3D11Texture3D1)) {
       *ppvObject = ref(this);
-      return S_OK;
-    }
-    
-    if (riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10Resource)
-     || riid == __uuidof(ID3D10Texture3D)) {
-      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
     

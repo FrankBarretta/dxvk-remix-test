@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 
 #include "../dxgi/dxgi_monitor.h"
 #include "../dxgi/dxgi_swapchain.h"
@@ -16,31 +17,21 @@
 #include "d3d11_interop.h"
 #include "d3d11_query.h"
 #include "d3d11_resource.h"
-#include "d3d11_rtx.h"
 #include "d3d11_sampler.h"
 #include "d3d11_shader.h"
 #include "d3d11_state_object.h"
 #include "d3d11_swapchain.h"
 #include "d3d11_texture.h"
-#include "d3d11_trace.h"
 #include "d3d11_video.h"
+
+#include <fstream>
+static void devLog(const char* msg) {
+  static std::ofstream f("d3d11_device_debug.log", std::ios::app);
+  if (f.is_open()) { f << msg << std::endl; f.flush(); }
+}
 
 namespace dxvk {
 
-  namespace {
-    Rc<DxvkDevice> CreateDxvkDeviceForD3D11(
-      const Rc<DxvkInstance>& dxvkInstance,
-      const Rc<DxvkAdapter>& dxvkAdapter,
-      D3D_FEATURE_LEVEL featureLevel) {
-      D3D11EarlyTrace("D3D11DXGIDevice CreateDxvkDeviceForD3D11 begin");
-      DxvkDeviceFeatures deviceFeatures = D3D11Device::GetDeviceFeatures(dxvkAdapter, featureLevel);
-      D3D11EarlyTrace("D3D11DXGIDevice CreateDxvkDeviceForD3D11 features ready");
-      Rc<DxvkDevice> device = dxvkAdapter->createDevice(dxvkInstance, deviceFeatures);
-      D3D11EarlyTrace("D3D11DXGIDevice CreateDxvkDeviceForD3D11 device created");
-      return device;
-    }
-  }
-  
   constexpr uint32_t D3D11DXGIDevice::DefaultFrameLatency;
 
 
@@ -56,20 +47,16 @@ namespace dxvk {
     m_dxvkAdapter   (m_dxvkDevice->adapter()),
     m_d3d11Formats  (m_dxvkAdapter),
     m_d3d11Options  (m_dxvkDevice->instance()->config(), m_dxvkDevice),
-    m_dxbcOptions   (m_dxvkDevice, m_d3d11Options),
-    m_rtx           (this) {
-    D3D11EarlyTrace("D3D11Device ctor begin");
+    m_dxbcOptions   (m_dxvkDevice, m_d3d11Options) {
+    devLog("[D3D11Device] ctor: creating initializer");
     m_initializer = new D3D11Initializer(this);
-    D3D11EarlyTrace("D3D11Device ctor created initializer");
+    devLog("[D3D11Device] ctor: creating ImmediateContext");
     m_context     = new D3D11ImmediateContext(this, m_dxvkDevice);
-    D3D11EarlyTrace("D3D11Device ctor created immediate context");
-    m_d3d10Device = new D3D10Device(this, m_context.ptr());
-    D3D11EarlyTrace("D3D11Device ctor complete");
+    devLog("[D3D11Device] ctor: done");
   }
   
   
   D3D11Device::~D3D11Device() {
-    delete m_d3d10Device;
     m_context = nullptr;
     delete m_initializer;
   }
@@ -154,7 +141,6 @@ namespace dxvk {
     try {
       const Com<D3D11Texture1D> texture = new D3D11Texture1D(this, &desc);
       m_initializer->InitTexture(texture->GetCommonTexture(), pInitialData);
-      texture->GetCommonTexture()->SetupForRtx(pInitialData);
       *ppTexture1D = texture.ref();
       return S_OK;
     } catch (const DxvkError& e) {
@@ -231,7 +217,6 @@ namespace dxvk {
     try {
       Com<D3D11Texture2D> texture = new D3D11Texture2D(this, &desc);
       m_initializer->InitTexture(texture->GetCommonTexture(), pInitialData);
-      texture->GetCommonTexture()->SetupForRtx(pInitialData);
       *ppTexture2D = texture.ref();
       return S_OK;
     } catch (const DxvkError& e) {
@@ -307,7 +292,6 @@ namespace dxvk {
     try {
       Com<D3D11Texture3D> texture = new D3D11Texture3D(this, &desc);
       m_initializer->InitTexture(texture->GetCommonTexture(), pInitialData);
-      texture->GetCommonTexture()->SetupForRtx(pInitialData);
       *ppTexture3D = texture.ref();
       return S_OK;
     } catch (const DxvkError& e) {
@@ -627,9 +611,7 @@ namespace dxvk {
       
       std::array<DxvkVertexAttribute, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> attrList;
       std::array<DxvkVertexBinding,   D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> bindList;
-      // NV-DXVK start: Build a parallel semantic array so the RTX capture
-      // path can resolve vertex attributes by semantic name.
-      std::array<D3D11SemanticInfo, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> semList;
+      std::array<D3D11RtxSemantic,    D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> semList = {};
       
       for (uint32_t i = 0; i < NumElements; i++) {
         const DxbcSgnEntry* entry = inputSignature->find(
@@ -673,13 +655,18 @@ namespace dxvk {
 
         attrList.at(i) = attrib;
 
-        // NV-DXVK start: Record the original D3D11 semantic for this attribute.
-        D3D11SemanticInfo sem;
-        if (pInputElementDescs[i].SemanticName != nullptr)
-          sem.name = pInputElementDescs[i].SemanticName;
-        sem.index = pInputElementDescs[i].SemanticIndex;
-        semList.at(i) = sem;
-        // NV-DXVK end
+        // Capture semantic metadata for RTX geometry routing
+        if (entry != nullptr) {
+          strncpy(semList.at(i).name, pInputElementDescs[i].SemanticName, 31);
+          semList.at(i).name[31] = '\0';
+          for (uint32_t j = 0; semList.at(i).name[j]; ++j)
+            semList.at(i).name[j] = static_cast<char>(toupper(static_cast<unsigned char>(semList.at(i).name[j])));
+          semList.at(i).index       = pInputElementDescs[i].SemanticIndex;
+          semList.at(i).inputSlot   = attrib.binding;
+          semList.at(i).byteOffset  = attrib.offset;
+          semList.at(i).format      = attrib.format;
+          semList.at(i).perInstance = pInputElementDescs[i].InputSlotClass == D3D11_INPUT_PER_INSTANCE_DATA;
+        }
         
         // Create vertex input binding description. The
         // stride is dynamic state in D3D11 and will be
@@ -722,10 +709,7 @@ namespace dxvk {
       // out attributes and bindings not used by the shader
       uint32_t attrCount = CompactSparseList(attrList.data(), attrMask);
       uint32_t bindCount = CompactSparseList(bindList.data(), bindMask);
-      // NV-DXVK start: Compact semantics in lock-step with attributes.
-      uint32_t semCount = CompactSparseList(semList.data(), attrMask);
-      (void)semCount; // Should equal attrCount
-      // NV-DXVK end
+      uint32_t semCount  = CompactSparseList(semList.data(), attrMask);
 
       // Check if there are any semantics defined in the
       // shader that are not included in the current input
@@ -747,11 +731,12 @@ namespace dxvk {
       // Create the actual input layout object
       // if the application requests it.
       if (ppInputLayout != nullptr) {
-        *ppInputLayout = ref(
-          new D3D11InputLayout(this,
-            attrCount, attrList.data(),
-            bindCount, bindList.data(),
-            semList.data(), attrCount));
+        auto* layout = new D3D11InputLayout(this,
+          attrCount, attrList.data(),
+          bindCount, bindList.data());
+        layout->SetRtxSemantics(std::vector<D3D11RtxSemantic>(
+          semList.data(), semList.data() + semCount));
+        *ppInputLayout = ref(layout);
       }
       
       return S_OK;
@@ -1303,7 +1288,7 @@ namespace dxvk {
           ID3D11Counter**             ppCounter) {
     InitReturnPtr(ppCounter);
     
-    Logger::err(str::format("D3D11: Unsupported counter: ", pCounterDesc->Counter));
+    Logger::warn(str::format("D3D11: Unsupported counter: ", pCounterDesc->Counter));
     return E_INVALIDARG;
   }
   
@@ -1353,9 +1338,7 @@ namespace dxvk {
     if (!pFeatureLevels || FeatureLevels == 0)
       return E_INVALIDARG;
     
-    if (EmulatedInterface != __uuidof(ID3D10Device)
-     && EmulatedInterface != __uuidof(ID3D10Device1)
-     && EmulatedInterface != __uuidof(ID3D11Device)
+    if (EmulatedInterface != __uuidof(ID3D11Device)
      && EmulatedInterface != __uuidof(ID3D11Device1))
       return E_INVALIDARG;
     
@@ -1429,9 +1412,14 @@ namespace dxvk {
           REFIID      ReturnedInterface,
           void**      ppResource) {
     InitReturnPtr(ppResource);
-    
-    Logger::err("D3D11Device::OpenSharedResource: Not implemented");
-    return E_NOTIMPL;
+
+    auto* resource = D3D11SharedResourceRegistry::Instance().Lookup(hResource);
+    if (!resource) {
+      Logger::err("D3D11Device::OpenSharedResource: Unknown handle");
+      return E_INVALIDARG;
+    }
+
+    return resource->QueryInterface(ReturnedInterface, ppResource);
   }
   
   
@@ -1440,9 +1428,14 @@ namespace dxvk {
           REFIID      ReturnedInterface,
           void**      ppResource) {
     InitReturnPtr(ppResource);
-    
-    Logger::err("D3D11Device::OpenSharedResource1: Not implemented");
-    return E_NOTIMPL;
+
+    auto* resource = D3D11SharedResourceRegistry::Instance().Lookup(hResource);
+    if (!resource) {
+      Logger::err("D3D11Device::OpenSharedResource1: Unknown handle");
+      return E_INVALIDARG;
+    }
+
+    return resource->QueryInterface(ReturnedInterface, ppResource);
   }
 
   
@@ -1826,11 +1819,6 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11Device::GetImmediateContext(ID3D11DeviceContext** ppImmediateContext) {
-    static bool s_loggedGetImmediateContext = false;
-    if (!s_loggedGetImmediateContext) {
-      s_loggedGetImmediateContext = true;
-      D3D11EarlyTrace("D3D11Device::GetImmediateContext");
-    }
     *ppImmediateContext = m_context.ref();
   }
 
@@ -1972,7 +1960,8 @@ namespace dxvk {
     enabled.core.features.shaderStorageImageWriteWithoutFormat    = VK_TRUE;
     enabled.core.features.depthBounds                             = supported.core.features.depthBounds;
 
-    enabled.vulkan11Features.shaderDrawParameters                = VK_TRUE;
+    // PHASMOPHOBIA REMIX PORTING: shaderDrawParameters removed from Remix fork
+    // enabled.shaderDrawParameters.shaderDrawParameters             = VK_TRUE;
 
     enabled.extMemoryPriority.memoryPriority                      = supported.extMemoryPriority.memoryPriority;
 
@@ -2001,7 +1990,8 @@ namespace dxvk {
       enabled.core.features.shaderCullDistance                    = VK_TRUE;
       enabled.core.features.textureCompressionBC                  = VK_TRUE;
       enabled.extDepthClipEnable.depthClipEnable                  = supported.extDepthClipEnable.depthClipEnable;
-      enabled.vulkan12Features.hostQueryReset                     = supported.vulkan12Features.hostQueryReset;
+      // PHASMOPHOBIA REMIX PORTING: extHostQueryReset not in Remix fork
+      // enabled.extHostQueryReset.hostQueryReset                    = supported.extHostQueryReset.hostQueryReset;
     }
     
     if (featureLevel >= D3D_FEATURE_LEVEL_9_2) {
@@ -3044,7 +3034,6 @@ namespace dxvk {
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
           IDXGIOutput*            pRestrictToOutput,
           IDXGISwapChain1**       ppSwapChain) {
-      D3D11EarlyTrace("WineDXGISwapChainFactory::CreateSwapChainForHwnd enter");
     InitReturnPtr(ppSwapChain);
     
     if (!ppSwapChain || !pDesc || !hWnd)
@@ -3074,16 +3063,13 @@ namespace dxvk {
       // Create presenter for the device
       Com<D3D11SwapChain> presenter = new D3D11SwapChain(
         m_container, m_device, hWnd, &desc);
-      D3D11EarlyTrace("WineDXGISwapChainFactory::CreateSwapChainForHwnd presenter created");
       
       // Create the actual swap chain
       *ppSwapChain = ref(new DxgiSwapChain(
         pFactory, presenter.ptr(), hWnd, &desc, &fsDesc));
-      D3D11EarlyTrace("WineDXGISwapChainFactory::CreateSwapChainForHwnd complete");
       return S_OK;
     } catch (const DxvkError& e) {
       Logger::err(e.message());
-      D3D11EarlyTrace("WineDXGISwapChainFactory::CreateSwapChainForHwnd failed with DxvkError");
       return E_INVALIDARG;
     }
   }
@@ -3135,19 +3121,19 @@ namespace dxvk {
   : m_dxgiAdapter   (pAdapter),
     m_dxvkInstance  (pDxvkInstance),
     m_dxvkAdapter   (pDxvkAdapter),
-    m_dxvkDevice    (CreateDxvkDeviceForD3D11(pDxvkInstance, pDxvkAdapter, FeatureLevel)),
+    m_dxvkDevice    (CreateDevice(FeatureLevel)),
     m_d3d11Device   (this, FeatureLevel, FeatureFlags),
     m_d3d11DeviceExt(this, &m_d3d11Device),
     m_d3d11Interop  (this, &m_d3d11Device),
     m_d3d11Video    (this, &m_d3d11Device),
     m_metaDevice    (this),
     m_wineFactory   (this, &m_d3d11Device) {
-    D3D11EarlyTrace("D3D11DXGIDevice ctor complete");
+    devLog("[D3D11DXGIDevice] ctor complete");
   }
   
   
   D3D11DXGIDevice::~D3D11DXGIDevice() {
-    
+    ReleaseSharedDevice();
   }
   
   
@@ -3156,25 +3142,6 @@ namespace dxvk {
       return E_POINTER;
 
     *ppvObject = nullptr;
-
-    if (riid == __uuidof(IWineDXGISwapChainFactory)) {
-      D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface IWineDXGISwapChainFactory");
-    } else if (riid == __uuidof(IDXGIDevice)
-            || riid == __uuidof(IDXGIDevice1)
-            || riid == __uuidof(IDXGIDevice2)
-            || riid == __uuidof(IDXGIDevice3)
-            || riid == __uuidof(IDXGIDevice4)) {
-      D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface IDXGIDevice*");
-    } else if (riid == __uuidof(ID3D11Device)
-            || riid == __uuidof(ID3D11Device1)
-            || riid == __uuidof(ID3D11Device2)
-            || riid == __uuidof(ID3D11Device3)
-            || riid == __uuidof(ID3D11Device4)
-            || riid == __uuidof(ID3D11Device5)) {
-      D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface ID3D11Device*");
-    } else if (riid == __uuidof(ID3D10Multithread)) {
-      D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface ID3D10Multithread");
-    }
     
     if (riid == __uuidof(IUnknown)
      || riid == __uuidof(IDXGIObject)
@@ -3190,12 +3157,6 @@ namespace dxvk {
     if (riid == __uuidof(IDXGIVkInteropDevice)
      || riid == __uuidof(IDXGIVkInteropDevice1)) {
       *ppvObject = ref(&m_d3d11Interop);
-      return S_OK;
-    }
-    
-    if (riid == __uuidof(ID3D10Device)
-     || riid == __uuidof(ID3D10Device1)) {
-      *ppvObject = ref(m_d3d11Device.GetD3D10Interface());
       return S_OK;
     }
     
@@ -3243,9 +3204,8 @@ namespace dxvk {
     if (riid == GUID{0xd56e2a4c,0x5127,0x8437,{0x65,0x8a,0x98,0xc5,0xbb,0x78,0x94,0x98}})
       return E_NOINTERFACE;
     
-    D3D11EarlyTrace("D3D11DXGIDevice::QueryInterface unknown interface");
-    Logger::warn("D3D11DXGIDevice::QueryInterface: Unknown interface query");
-    Logger::warn(str::format(riid));
+    Logger::info("D3D11DXGIDevice::QueryInterface: Unknown interface query");
+    Logger::info(str::format(riid));
     return E_NOINTERFACE;
   }
   
@@ -3492,9 +3452,45 @@ namespace dxvk {
   }
 
 
+  // Shared DxvkDevice lifecycle: Remix initializes a global RT pipeline per
+  // DxvkDevice.  Multi-device games (Unity, UE4) and emulators (Dolphin, RPCS3)
+  // create 2+ D3D11 devices — each would spin up its own Remix pipeline,
+  // deadlocking the GPU.  We share one DxvkDevice across all D3D11DXGIDevice
+  // instances and release it only when the last one is destroyed.  This lets
+  // emulators safely destroy-and-recreate devices (game switching, plugin reload)
+  // while multi-device games share a single pipeline.
+  static std::mutex      g_sharedDeviceMutex;
+  static Rc<DxvkDevice>  g_sharedDevice;
+  static uint32_t        g_sharedDeviceRefCount = 0;
+
   Rc<DxvkDevice> D3D11DXGIDevice::CreateDevice(D3D_FEATURE_LEVEL FeatureLevel) {
+    std::lock_guard lock(g_sharedDeviceMutex);
+    g_sharedDeviceRefCount++;
+
+    if (g_sharedDevice != nullptr) {
+      Logger::info("D3D11DXGIDevice::CreateDevice: Reusing shared DxvkDevice");
+      return g_sharedDevice;
+    }
+
+    Logger::info("D3D11DXGIDevice::CreateDevice: Creating new shared DxvkDevice");
     DxvkDeviceFeatures deviceFeatures = D3D11Device::GetDeviceFeatures(m_dxvkAdapter, FeatureLevel);
-    return m_dxvkAdapter->createDevice(m_dxvkInstance, deviceFeatures);
+    g_sharedDevice = m_dxvkAdapter->createDevice(m_dxvkInstance, deviceFeatures);
+    return g_sharedDevice;
+  }
+
+  void D3D11DXGIDevice::ReleaseSharedDevice() {
+    std::lock_guard lock(g_sharedDeviceMutex);
+    if (g_sharedDeviceRefCount > 0)
+      g_sharedDeviceRefCount--;
+
+    if (g_sharedDeviceRefCount == 0) {
+      Logger::info("D3D11DXGIDevice::ReleaseSharedDevice: All D3D11 devices released (DxvkDevice kept alive)");
+      // Keep g_sharedDevice alive. Emulators (Dolphin, RPCS3) and some engines
+      // rapidly create/destroy D3D11 devices during init probing. Releasing the
+      // Vulkan device kills all Remix state (RT, DLSS, Reflex, shader caches)
+      // and costs ~2s per cycle. The device is lightweight when idle and will be
+      // reused on the next D3D11CreateDevice call.
+    }
   }
 
 }

@@ -11,8 +11,7 @@ namespace dxvk {
     const D3D11_BUFFER_DESC*          pDesc)
   : D3D11DeviceChild<ID3D11Buffer>(pDevice),
     m_desc        (*pDesc),
-    m_resource    (this),
-    m_d3d10       (this) {
+    m_resource    (this) {
     DxvkBufferCreateInfo  info;
     info.size   = pDesc->ByteWidth;
     info.usage  = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
@@ -71,11 +70,7 @@ namespace dxvk {
 
     // Create the buffer and set the entire buffer slice as mapped,
     // so that we only have to update it when invalidating th buffer
-    m_buffer = m_parent->GetDXVKDevice()->createBuffer(
-      info,
-      GetMemoryFlags(),
-      DxvkMemoryStats::Category::AppBuffer,
-      "D3D11 buffer");
+    m_buffer = m_parent->GetDXVKDevice()->createBuffer(info, GetMemoryFlags(), DxvkMemoryStats::Category::AppBuffer, "d3d11 buffer");
     m_mapped = m_buffer->getSliceHandle();
 
     m_mapMode = DetermineMapMode();
@@ -102,13 +97,6 @@ namespace dxvk {
      || riid == __uuidof(ID3D11Resource)
      || riid == __uuidof(ID3D11Buffer)) {
       *ppvObject = ref(this);
-      return S_OK;
-    }
-    
-    if (riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10Resource)
-     || riid == __uuidof(ID3D10Buffer)) {
-      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
 
@@ -225,12 +213,7 @@ namespace dxvk {
       case D3D11_USAGE_DEFAULT:
         memoryFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-        // NV-DXVK start: RTX Remix needs CPU mapping of Geometry buffers to compute hashes.
-        // If they are DEFAULT usage without CPU access, mapPtr() returns nullptr, and Remix
-        // fails to compute hashes, disabling geometry capture. We force HOST_VISIBLE here.
-        if ((m_desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER) || m_desc.CPUAccessFlags ||
-            (m_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))) {
-        // NV-DXVK end
+        if ((m_desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER) || m_desc.CPUAccessFlags) {
           memoryFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
                       |  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         }
@@ -282,11 +265,7 @@ namespace dxvk {
                 | VK_ACCESS_INDIRECT_COMMAND_READ_BIT
                 | VK_ACCESS_TRANSFORM_FEEDBACK_COUNTER_READ_BIT_EXT
                 | VK_ACCESS_TRANSFORM_FEEDBACK_COUNTER_WRITE_BIT_EXT;
-    return device->createBuffer(
-      info,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-      DxvkMemoryStats::Category::AppBuffer,
-      "D3D11 stream-output counter");
+    return device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, DxvkMemoryStats::Category::AppBuffer, "d3d11 counter buffer");
   }
 
 

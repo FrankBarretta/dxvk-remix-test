@@ -4,9 +4,6 @@
 #include "d3d11_texture.h"
 #include "d3d11_view_srv.h"
 
-#include "../dxvk/imgui/dxvk_imgui.h"
-#include "../dxvk/rtx_render/rtx_constants.h"
-
 namespace dxvk {
   
   D3D11ShaderResourceView::D3D11ShaderResourceView(
@@ -14,7 +11,7 @@ namespace dxvk {
           ID3D11Resource*                   pResource,
     const D3D11_SHADER_RESOURCE_VIEW_DESC1* pDesc)
   : D3D11DeviceChild<ID3D11ShaderResourceView1>(pDevice),
-    m_resource(pResource), m_desc(*pDesc), m_d3d10(this) {
+    m_resource(pResource), m_desc(*pDesc) {
     ResourceAddRefPrivate(m_resource);
 
     D3D11_COMMON_RESOURCE_DESC resourceDesc;
@@ -180,18 +177,6 @@ namespace dxvk {
 
       // Create the underlying image view object
       m_imageView = pDevice->GetDXVKDevice()->createImageView(texture->GetImage(), viewInfo);
-
-      if (m_imageView != nullptr) {
-        const Rc<DxvkImage> image = texture->GetImage();
-        if (image != nullptr && image->getHash() != kEmptyHash) {
-          ImGUI::AddTexture(image->getHash(), m_imageView, ImGUI::kTextureFlagsDefault);
-
-          if (image->getDescriptorHash() != kEmptyHash
-           && (image->info().usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
-            ImGUI::AddTexture(image->getDescriptorHash(), m_imageView, ImGUI::kTextureFlagsRenderTarget);
-          }
-        }
-      }
     }
   }
   
@@ -212,14 +197,6 @@ namespace dxvk {
      || riid == __uuidof(ID3D11View)
      || riid == __uuidof(ID3D11ShaderResourceView)
      || riid == __uuidof(ID3D11ShaderResourceView1)) {
-      *ppvObject = ref(this);
-      return S_OK;
-    }
-    
-    if (riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10View)
-     || riid == __uuidof(ID3D10ShaderResourceView)
-     || riid == __uuidof(ID3D10ShaderResourceView1)) {
       *ppvObject = ref(this);
       return S_OK;
     }

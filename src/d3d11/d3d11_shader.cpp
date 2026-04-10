@@ -66,11 +66,7 @@ namespace dxvk {
         | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
         | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
       
-      m_buffer = pDevice->GetDXVKDevice()->createBuffer(
-        info,
-        memFlags,
-        DxvkMemoryStats::Category::AppBuffer,
-        "D3D11 shader constants");
+      m_buffer = pDevice->GetDXVKDevice()->createBuffer(info, memFlags, DxvkMemoryStats::Category::AppBuffer, "d3d11 shader constants");
 
       std::memcpy(m_buffer->mapPtr(0),
         m_shader->shaderConstants().data(),

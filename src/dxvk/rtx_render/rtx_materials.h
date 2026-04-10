@@ -1609,6 +1609,7 @@ struct LegacyMaterialData {
 private:
   friend class RtxContext;
   friend struct D3D9Rtx;
+  friend class D3D11Rtx;
   friend class TerrainBaker;
   friend class SceneManager;
   friend struct RemixAPIPrivateAccessor;

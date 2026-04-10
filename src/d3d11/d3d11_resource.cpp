@@ -12,7 +12,8 @@ namespace dxvk {
 
 
   D3D11DXGIResource::~D3D11DXGIResource() {
-
+    if (m_sharedHandle)
+      D3D11SharedResourceRegistry::Instance().Unregister(m_sharedHandle);
   }
 
 
@@ -82,8 +83,17 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11DXGIResource::GetSharedHandle(
           HANDLE*                 pSharedHandle) {
     InitReturnPtr(pSharedHandle);
-    Logger::err("D3D11DXGIResource::GetSharedHandle: Stub");
-    return E_NOTIMPL;
+
+    if (!pSharedHandle)
+      return E_POINTER;
+
+    // Register in the in-process shared resource registry so that
+    // OpenSharedResource on another D3D11 device can find it.
+    if (!m_sharedHandle)
+      m_sharedHandle = D3D11SharedResourceRegistry::Instance().Register(m_resource);
+
+    *pSharedHandle = m_sharedHandle;
+    return S_OK;
   }
 
 

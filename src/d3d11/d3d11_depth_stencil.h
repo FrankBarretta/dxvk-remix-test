@@ -2,8 +2,6 @@
 
 #include "../dxvk/dxvk_device.h"
 
-#include "../d3d10/d3d10_depth_stencil.h"
-
 #include "d3d11_device_child.h"
 #include "d3d11_util.h"
 
@@ -31,11 +29,6 @@ namespace dxvk {
     
     void BindToContext(
       const Rc<DxvkContext>&  ctx);
-    
-    D3D10DepthStencilState* GetD3D10Iface() {
-      return &m_d3d10;
-    }
-    
     static HRESULT NormalizeDesc(
             D3D11_DEPTH_STENCIL_DESC* pDesc);
     
@@ -43,8 +36,6 @@ namespace dxvk {
     
     D3D11_DEPTH_STENCIL_DESC  m_desc;
     DxvkDepthStencilState     m_state;
-    D3D10DepthStencilState    m_d3d10;
-    
     VkStencilOpState DecodeStencilOpState(
       const D3D11_DEPTH_STENCILOP_DESC& StencilDesc,
       const D3D11_DEPTH_STENCIL_DESC&   Desc) const;

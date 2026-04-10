@@ -11,7 +11,7 @@ namespace dxvk {
           ID3D11Resource*                   pResource,
     const D3D11_RENDER_TARGET_VIEW_DESC1*   pDesc)
   : D3D11DeviceChild<ID3D11RenderTargetView1>(pDevice),
-    m_resource(pResource), m_desc(*pDesc), m_d3d10(this) {
+    m_resource(pResource), m_desc(*pDesc) {
     ResourceAddRefPrivate(m_resource);
 
     auto texture = GetCommonTexture(pResource);
@@ -130,13 +130,6 @@ namespace dxvk {
      || riid == __uuidof(ID3D11View)
      || riid == __uuidof(ID3D11RenderTargetView)
      || riid == __uuidof(ID3D11RenderTargetView1)) {
-      *ppvObject = ref(this);
-      return S_OK;
-    }
-    
-    if (riid == __uuidof(ID3D10DeviceChild)
-     || riid == __uuidof(ID3D10View)
-     || riid == __uuidof(ID3D10RenderTargetView)) {
       *ppvObject = ref(this);
       return S_OK;
     }

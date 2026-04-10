@@ -1,7 +1,5 @@
 #include <array>
-#include <csignal>
-#include <cstdio>
-#include <exception>
+#include <filesystem>
 
 #include <windows.h>
 
@@ -12,232 +10,164 @@
 #include "d3d11_device.h"
 #include "d3d11_enums.h"
 #include "d3d11_interop.h"
-#include "d3d11_trace.h"
 
 #include "../util/util_env.h"
 #include "../util/util_filesys.h"
-#include "../util/util_once.h"
 
-namespace dxvk {
-  Logger Logger::s_instance("d3d11.log", LogLevel::None);
+// Ensure all Remix runtime DLLs (dxgi, NRD, DLSS, etc.) resolve from the
+// game directory, not System32.  Launchers (Rockstar, Epic, Steam) often
+// change CWD or use restricted search paths.
+//
+// SetDllDirectoryW  — classic mechanism, always effective.
+// AddDllDirectory   — persistent & additive; survives another DLL calling
+//                     SetDllDirectoryW(NULL).  Only participates in search
+//                     when the process opted into LOAD_LIBRARY_SEARCH_* via
+//                     SetDefaultDllDirectories (some games or runtimes do).
+static void d3d11CrashLog(const char* msg) {
+  // Write to a file next to our DLL
+  static char logPath[MAX_PATH] = {};
+  if (logPath[0] == '\0') {
+    HMODULE hMod = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCSTR)&d3d11CrashLog, &hMod);
+    GetModuleFileNameA(hMod, logPath, MAX_PATH);
+    char* sep = strrchr(logPath, '\\');
+    if (sep) *(sep + 1) = '\0';
+    strcat_s(logPath, "d3d11_crash.log");
+  }
+  FILE* f = fopen(logPath, "a");
+  if (f) { fprintf(f, "%s\n", msg); fflush(f); fclose(f); }
+  OutputDebugStringA(msg);
+  OutputDebugStringA("\n");
 }
 
-namespace {
-  HMODULE g_d3d11Module = nullptr;
-  std::terminate_handler g_previousTerminateHandler = nullptr;
-  _purecall_handler g_previousPurecallHandler = nullptr;
-  _invalid_parameter_handler g_previousInvalidParameterHandler = nullptr;
-  LPTOP_LEVEL_EXCEPTION_FILTER g_previousUnhandledExceptionFilter = nullptr;
-  bool g_enableEarlyTrace = false;
-
-  struct ModuleAddressInfo {
-    HMODULE moduleBase = nullptr;
-    const char* moduleName = nullptr;
-  };
-
-  ModuleAddressInfo ModuleInfoFromAddress(const void* address, char* buffer, size_t bufferSize) {
-    if (address == nullptr || buffer == nullptr || bufferSize == 0) {
-      return {};
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+    d3d11CrashLog("[DllMain] DLL_PROCESS_ATTACH");
+    if (!dxvk::env::shouldBypassRemixForCurrentProcess()) {
+      wchar_t path[MAX_PATH];
+      if (GetModuleFileNameW(hModule, path, MAX_PATH)) {
+        wchar_t* sep = wcsrchr(path, L'\\');
+        if (sep) {
+          *sep = L'\0';
+          SetDllDirectoryW(path);
+          AddDllDirectory(path);
+        }
+            }
+        }
     }
-
-    MEMORY_BASIC_INFORMATION memoryInfo = {};
-
-    if (VirtualQuery(address, &memoryInfo, sizeof(memoryInfo)) == 0 || memoryInfo.AllocationBase == nullptr) {
-      return {};
-    }
-
-    const DWORD pathLength = GetModuleFileNameA(
-      static_cast<HMODULE>(memoryInfo.AllocationBase),
-      buffer,
-      static_cast<DWORD>(bufferSize));
-
-    if (pathLength == 0 || pathLength >= bufferSize) {
-      return { static_cast<HMODULE>(memoryInfo.AllocationBase), nullptr };
-    }
-
-    const char* lastSeparator = std::strrchr(buffer, '\\');
-    return {
-      static_cast<HMODULE>(memoryInfo.AllocationBase),
-      lastSeparator != nullptr ? lastSeparator + 1 : buffer,
-    };
-  }
-
-  void EarlyTraceImpl(const char* message) {
-    char line[1024];
-    const DWORD pid = GetCurrentProcessId();
-    const DWORD tid = GetCurrentThreadId();
-    const int lineLength = std::snprintf(line, sizeof(line), "[pid=%lu tid=%lu] %s\r\n", pid, tid, message);
-
-    if (lineLength > 0)
-      OutputDebugStringA(line);
-
-    wchar_t path[MAX_PATH] = {};
-    const DWORD pathLength = g_d3d11Module != nullptr
-      ? GetModuleFileNameW(g_d3d11Module, path, MAX_PATH)
-      : GetModuleFileNameW(nullptr, path, MAX_PATH);
-
-    if (pathLength == 0 || pathLength >= MAX_PATH)
-      return;
-
-    wchar_t* lastSeparator = wcsrchr(path, L'\\');
-
-    if (lastSeparator == nullptr)
-      return;
-
-    *(lastSeparator + 1) = L'\0';
-    wcscat_s(path, L"d3d11-early.log");
-
-    HANDLE file = CreateFileW(path,
-      FILE_APPEND_DATA,
-      FILE_SHARE_READ | FILE_SHARE_WRITE,
-      nullptr,
-      OPEN_ALWAYS,
-      FILE_ATTRIBUTE_NORMAL,
-      nullptr);
-
-    if (file == INVALID_HANDLE_VALUE)
-      return;
-
-    DWORD bytesWritten = 0;
-    WriteFile(file, line, static_cast<DWORD>(lineLength), &bytesWritten, nullptr);
-    CloseHandle(file);
-  }
-
-  LONG WINAPI UnhandledExceptionLogger(EXCEPTION_POINTERS* exceptionInfo) {
-    if (exceptionInfo != nullptr && exceptionInfo->ExceptionRecord != nullptr) {
-      char modulePath[MAX_PATH] = {};
-      const void* exceptionAddress = exceptionInfo->ExceptionRecord->ExceptionAddress;
-      const ModuleAddressInfo moduleInfo = ModuleInfoFromAddress(exceptionAddress, modulePath, sizeof(modulePath));
-      const uintptr_t exceptionAddressValue = reinterpret_cast<uintptr_t>(exceptionAddress);
-      const uintptr_t moduleBaseValue = reinterpret_cast<uintptr_t>(moduleInfo.moduleBase);
-      const uintptr_t moduleOffset = moduleBaseValue != 0u && exceptionAddressValue >= moduleBaseValue
-        ? exceptionAddressValue - moduleBaseValue
-        : 0u;
-      char message[384];
-
-      if (moduleInfo.moduleName != nullptr) {
-        std::snprintf(message,
-          sizeof(message),
-          "Unhandled exception code=0x%08lX address=%p module=%s base=%p rva=0x%llX",
-          static_cast<unsigned long>(exceptionInfo->ExceptionRecord->ExceptionCode),
-          exceptionAddress,
-          moduleInfo.moduleName,
-          moduleInfo.moduleBase,
-          static_cast<unsigned long long>(moduleOffset));
-      } else {
-        std::snprintf(message,
-          sizeof(message),
-          "Unhandled exception code=0x%08lX address=%p base=%p",
-          static_cast<unsigned long>(exceptionInfo->ExceptionRecord->ExceptionCode),
-          exceptionAddress,
-          moduleInfo.moduleBase);
-      }
-
-      EarlyTraceImpl(message);
-    } else {
-      EarlyTraceImpl("Unhandled exception with no exception record");
-    }
-
-    return g_previousUnhandledExceptionFilter != nullptr
-      ? g_previousUnhandledExceptionFilter(exceptionInfo)
-      : EXCEPTION_CONTINUE_SEARCH;
-  }
-
-  void __cdecl TerminateLogger() {
-    EarlyTraceImpl("std::terminate called");
-
-    if (g_previousTerminateHandler != nullptr) {
-      auto handler = g_previousTerminateHandler;
-      g_previousTerminateHandler = nullptr;
-      std::set_terminate(handler);
-      handler();
-    }
-
-    std::abort();
-  }
-
-  void __cdecl PurecallLogger() {
-    EarlyTraceImpl("_purecall invoked");
-
-    if (g_previousPurecallHandler != nullptr) {
-      auto handler = g_previousPurecallHandler;
-      g_previousPurecallHandler = nullptr;
-      _set_purecall_handler(handler);
-      handler();
-      return;
-    }
-
-    std::abort();
-  }
-
-  void __cdecl InvalidParameterLogger(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t) {
-    EarlyTraceImpl("invalid parameter handler invoked");
-
-    if (g_previousInvalidParameterHandler != nullptr) {
-      auto handler = g_previousInvalidParameterHandler;
-      g_previousInvalidParameterHandler = nullptr;
-      _set_invalid_parameter_handler(handler);
-      handler(nullptr, nullptr, nullptr, 0, 0);
-      return;
-    }
-
-    std::abort();
-  }
-
-  void __cdecl SignalLogger(int signalValue) {
-    char message[128];
-    std::snprintf(message, sizeof(message), "signal handler invoked signal=%d", signalValue);
-    EarlyTraceImpl(message);
-    std::signal(signalValue, SIG_DFL);
-    std::raise(signalValue);
-  }
-
-  void InstallCrashDiagnostics() {
-    static bool installed = false;
-
-    if (installed)
-      return;
-
-    installed = true;
-    EarlyTraceImpl("Installing crash diagnostics");
-
-    g_previousTerminateHandler = std::set_terminate(TerminateLogger);
-    g_previousPurecallHandler = _set_purecall_handler(PurecallLogger);
-    g_previousInvalidParameterHandler = _set_invalid_parameter_handler(InvalidParameterLogger);
-    g_previousUnhandledExceptionFilter = SetUnhandledExceptionFilter(UnhandledExceptionLogger);
-    std::signal(SIGABRT, SignalLogger);
-    std::signal(SIGILL, SignalLogger);
-    std::signal(SIGINT, SignalLogger);
-    std::signal(SIGSEGV, SignalLogger);
-    std::signal(SIGTERM, SignalLogger);
-  }
-
-  int SehFilter(const char* scope, DWORD code, EXCEPTION_POINTERS* exceptionInfo) {
-    char message[320];
-    const void* exceptionAddress = exceptionInfo != nullptr && exceptionInfo->ExceptionRecord != nullptr
-      ? exceptionInfo->ExceptionRecord->ExceptionAddress
-      : nullptr;
-    std::snprintf(message, sizeof(message), "%s failed with SEH 0x%08lX at %p", scope, static_cast<unsigned long>(code), exceptionAddress);
-    EarlyTraceImpl(message);
-    return EXCEPTION_EXECUTE_HANDLER;
-  }
+    return TRUE;
 }
 
 namespace dxvk {
+  Logger Logger::s_instance("d3d11.log");
 }
   
 extern "C" {
   using namespace dxvk;
 
-  BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID) {
-    if (fdwReason == DLL_PROCESS_ATTACH) {
-      g_d3d11Module = hinstDLL;
-      g_enableEarlyTrace = env::getEnvVar("DXVK_D3D11_EARLY_TRACE") == "1";
-      DisableThreadLibraryCalls(hinstDLL);
-      EarlyTraceImpl("DllMain DLL_PROCESS_ATTACH");
-    }
+  static HMODULE loadSystemD3D11() {
+    wchar_t sysPath[MAX_PATH];
+    GetSystemDirectoryW(sysPath, MAX_PATH);
+    wcscat_s(sysPath, L"\\d3d11.dll");
+    return LoadLibraryExW(sysPath, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+  }
 
-    return TRUE;
+  static HRESULT forwardToSystemD3D11CoreCreateDevice(
+          IDXGIFactory*       pFactory,
+          IDXGIAdapter*       pAdapter,
+          UINT                Flags,
+    const D3D_FEATURE_LEVEL*  pFeatureLevels,
+          UINT                FeatureLevels,
+          ID3D11Device**      ppDevice) {
+    HMODULE hSys = loadSystemD3D11();
+    if (!hSys)
+      return E_FAIL;
+
+    using PFN = HRESULT(WINAPI*)(IDXGIFactory*, IDXGIAdapter*, UINT, const D3D_FEATURE_LEVEL*, UINT, ID3D11Device**);
+    auto fn = reinterpret_cast<PFN>(GetProcAddress(hSys, "D3D11CoreCreateDevice"));
+    if (!fn)
+      return E_FAIL;
+
+    return fn(pFactory, pAdapter, Flags, pFeatureLevels, FeatureLevels, ppDevice);
+  }
+
+  static HRESULT forwardToSystemD3D11CreateDevice(
+          IDXGIAdapter*         pAdapter,
+          D3D_DRIVER_TYPE       DriverType,
+          HMODULE               Software,
+          UINT                  Flags,
+    const D3D_FEATURE_LEVEL*    pFeatureLevels,
+          UINT                  FeatureLevels,
+          UINT                  SDKVersion,
+          ID3D11Device**        ppDevice,
+          D3D_FEATURE_LEVEL*    pFeatureLevel,
+          ID3D11DeviceContext** ppImmediateContext) {
+    HMODULE hSys = loadSystemD3D11();
+    if (!hSys)
+      return E_FAIL;
+
+    using PFN = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
+      const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+    auto fn = reinterpret_cast<PFN>(GetProcAddress(hSys, "D3D11CreateDevice"));
+    if (!fn)
+      return E_FAIL;
+
+    return fn(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
+      SDKVersion, ppDevice, pFeatureLevel, ppImmediateContext);
+  }
+
+  static HRESULT forwardToSystemD3D11CreateDeviceAndSwapChain(
+          IDXGIAdapter*         pAdapter,
+          D3D_DRIVER_TYPE       DriverType,
+          HMODULE               Software,
+          UINT                  Flags,
+    const D3D_FEATURE_LEVEL*    pFeatureLevels,
+          UINT                  FeatureLevels,
+          UINT                  SDKVersion,
+    const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+          IDXGISwapChain**      ppSwapChain,
+          ID3D11Device**        ppDevice,
+          D3D_FEATURE_LEVEL*    pFeatureLevel,
+          ID3D11DeviceContext** ppImmediateContext) {
+    HMODULE hSys = loadSystemD3D11();
+    if (!hSys)
+      return E_FAIL;
+
+    using PFN = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
+      const D3D_FEATURE_LEVEL*, UINT, UINT, const DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**,
+      ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+    auto fn = reinterpret_cast<PFN>(GetProcAddress(hSys, "D3D11CreateDeviceAndSwapChain"));
+    if (!fn)
+      return E_FAIL;
+
+    return fn(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
+      SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
+  }
+
+  static HRESULT forwardToSystemD3D11On12CreateDevice(
+          IUnknown*             pDevice,
+          UINT                  Flags,
+    const D3D_FEATURE_LEVEL*    pFeatureLevels,
+          UINT                  FeatureLevels,
+          IUnknown* const*      ppCommandQueues,
+          UINT                  NumQueues,
+          UINT                  NodeMask,
+          ID3D11Device**        ppDevice,
+          ID3D11DeviceContext** ppImmediateContext,
+          D3D_FEATURE_LEVEL*    pChosenFeatureLevel) {
+    HMODULE hSys = loadSystemD3D11();
+    if (!hSys)
+      return E_FAIL;
+
+    using PFN = HRESULT(WINAPI*)(IUnknown*, UINT, const D3D_FEATURE_LEVEL*, UINT,
+      IUnknown* const*, UINT, UINT, ID3D11Device**, ID3D11DeviceContext**, D3D_FEATURE_LEVEL*);
+    auto fn = reinterpret_cast<PFN>(GetProcAddress(hSys, "D3D11On12CreateDevice"));
+    if (!fn)
+      return E_FAIL;
+
+    return fn(pDevice, Flags, pFeatureLevels, FeatureLevels, ppCommandQueues,
+      NumQueues, NodeMask, ppDevice, ppImmediateContext, pChosenFeatureLevel);
   }
   
   DLLEXPORT HRESULT __stdcall D3D11CoreCreateDevice(
@@ -247,8 +177,27 @@ extern "C" {
     const D3D_FEATURE_LEVEL*  pFeatureLevels,
           UINT                FeatureLevels,
           ID3D11Device**      ppDevice) {
+    if (env::shouldBypassRemixForCurrentProcess()) {
+      Logger::info(str::format("D3D11 bypass for helper process: ", env::getExeName()));
+      return forwardToSystemD3D11CoreCreateDevice(pFactory, pAdapter, Flags, pFeatureLevels, FeatureLevels, ppDevice);
+    }
+
+    d3d11CrashLog("[D3D11CoreCreateDevice] enter");
     InitReturnPtr(ppDevice);
-        EarlyTraceImpl("D3D11CoreCreateDevice enter");
+
+    // Initialise the RTX filesystem (log/mod/capture paths) relative to the
+    // game exe, then re-open the log file under that path.  Must be ONCE since
+    // D3D11CoreCreateDevice can be called multiple times.
+    ONCE(
+      d3d11CrashLog("[D3D11CoreCreateDevice] ONCE: init RtxFileSys");
+      const auto exePath = env::getExePath();
+      const auto exeDir  = std::filesystem::path(exePath).parent_path();
+      util::RtxFileSys::init(exeDir.string());
+      d3d11CrashLog("[D3D11CoreCreateDevice] ONCE: initRtxLog");
+      Logger::initRtxLog();
+      util::RtxFileSys::print();
+      d3d11CrashLog("[D3D11CoreCreateDevice] ONCE: done");
+    );
 
     Rc<DxvkAdapter>  dxvkAdapter;
     Rc<DxvkInstance> dxvkInstance;
@@ -310,18 +259,17 @@ extern "C" {
     const D3D_FEATURE_LEVEL fl = pFeatureLevels[flId];
     
     try {
+      d3d11CrashLog("[D3D11CoreCreateDevice] creating D3D11DXGIDevice");
       Logger::info(str::format("D3D11CoreCreateDevice: Using feature level ", fl));
-      EarlyTraceImpl("D3D11CoreCreateDevice creating D3D11DXGIDevice");
       Com<D3D11DXGIDevice> device = new D3D11DXGIDevice(
         pAdapter, dxvkInstance, dxvkAdapter, fl, Flags);
+      d3d11CrashLog("[D3D11CoreCreateDevice] device created, querying interface");
 
-      EarlyTraceImpl("D3D11CoreCreateDevice created D3D11DXGIDevice");
-      
       return device->QueryInterface(
         __uuidof(ID3D11Device),
         reinterpret_cast<void**>(ppDevice));
     } catch (const DxvkError& e) {
-      EarlyTraceImpl(str::format("D3D11CoreCreateDevice threw DxvkError: ", e.message()).c_str());
+      d3d11CrashLog("[D3D11CoreCreateDevice] EXCEPTION creating device");
       Logger::err("D3D11CoreCreateDevice: Failed to create D3D11 device");
       return E_FAIL;
     }
@@ -344,20 +292,6 @@ extern "C" {
     InitReturnPtr(ppDevice);
     InitReturnPtr(ppSwapChain);
     InitReturnPtr(ppImmediateContext);
-
-    EarlyTraceImpl("D3D11InternalCreateDeviceAndSwapChain enter");
-
-    ONCE(
-      const auto exePath = env::getExePath();
-      const auto exeDir = std::filesystem::path(exePath).parent_path();
-      EarlyTraceImpl(str::format("D3D11InternalCreateDeviceAndSwapChain init root ", exeDir.string()).c_str());
-      util::RtxFileSys::init(exeDir.string());
-      Logger::initRtxLog();
-          Logger::info("D3D11 RTX logger initialized");
-      util::RtxFileSys::print();
-      InstallCrashDiagnostics();
-      EarlyTraceImpl("D3D11InternalCreateDeviceAndSwapChain init complete");
-    );
 
     if (pFeatureLevel)
       *pFeatureLevel = D3D_FEATURE_LEVEL(0);
@@ -412,10 +346,6 @@ extern "C" {
       dxgiFactory.ptr(), dxgiAdapter.ptr(),
       Flags, pFeatureLevels, FeatureLevels,
       &device);
-
-    char hrMessage[128];
-    std::snprintf(hrMessage, sizeof(hrMessage), "D3D11InternalCreateDeviceAndSwapChain D3D11CoreCreateDevice hr=0x%08lX", static_cast<unsigned long>(hr));
-    EarlyTraceImpl(hrMessage);
     
     if (FAILED(hr))
       return hr;
@@ -446,8 +376,6 @@ extern "C" {
     // with the device so we should report S_FALSE here.
     if (!ppDevice && !ppImmediateContext && !ppSwapChain)
       return S_FALSE;
-
-    EarlyTraceImpl("D3D11InternalCreateDeviceAndSwapChain success");
     
     return S_OK;
   }
@@ -464,17 +392,20 @@ extern "C" {
           ID3D11Device**        ppDevice,
           D3D_FEATURE_LEVEL*    pFeatureLevel,
           ID3D11DeviceContext** ppImmediateContext) {
-            EarlyTraceImpl("D3D11CreateDevice enter");
-
-    __try {
-      return D3D11InternalCreateDeviceAndSwapChain(
-        pAdapter, DriverType, Software, Flags,
-        pFeatureLevels, FeatureLevels, SDKVersion,
-        nullptr, nullptr,
-        ppDevice, pFeatureLevel, ppImmediateContext);
-    } __except (SehFilter("D3D11CreateDevice", GetExceptionCode(), GetExceptionInformation())) {
-      return E_FAIL;
+    d3d11CrashLog("[D3D11CreateDevice] enter");
+    if (env::shouldBypassRemixForCurrentProcess()) {
+      d3d11CrashLog("[D3D11CreateDevice] bypass");
+      Logger::info(str::format("D3D11 bypass for helper process: ", env::getExeName()));
+      return forwardToSystemD3D11CreateDevice(pAdapter, DriverType, Software, Flags,
+        pFeatureLevels, FeatureLevels, SDKVersion, ppDevice, pFeatureLevel, ppImmediateContext);
     }
+
+    d3d11CrashLog("[D3D11CreateDevice] calling InternalCreateDeviceAndSwapChain");
+    return D3D11InternalCreateDeviceAndSwapChain(
+      pAdapter, DriverType, Software, Flags,
+      pFeatureLevels, FeatureLevels, SDKVersion,
+      nullptr, nullptr,
+      ppDevice, pFeatureLevel, ppImmediateContext);
   }
   
   
@@ -491,17 +422,23 @@ extern "C" {
           ID3D11Device**        ppDevice,
           D3D_FEATURE_LEVEL*    pFeatureLevel,
           ID3D11DeviceContext** ppImmediateContext) {
-            EarlyTraceImpl("D3D11CreateDeviceAndSwapChain enter");
-
-    __try {
-      return D3D11InternalCreateDeviceAndSwapChain(
-        pAdapter, DriverType, Software, Flags,
-        pFeatureLevels, FeatureLevels, SDKVersion,
-        pSwapChainDesc, ppSwapChain,
+    d3d11CrashLog("[D3D11CreateDeviceAndSwapChain] enter");
+    if (env::shouldBypassRemixForCurrentProcess()) {
+      d3d11CrashLog("[D3D11CreateDeviceAndSwapChain] bypass");
+      Logger::info(str::format("D3D11 swapchain bypass for helper process: ", env::getExeName()));
+      return forwardToSystemD3D11CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags,
+        pFeatureLevels, FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain,
         ppDevice, pFeatureLevel, ppImmediateContext);
-    } __except (SehFilter("D3D11CreateDeviceAndSwapChain", GetExceptionCode(), GetExceptionInformation())) {
-      return E_FAIL;
     }
+
+    d3d11CrashLog("[D3D11CreateDeviceAndSwapChain] calling Internal");
+    auto hr = D3D11InternalCreateDeviceAndSwapChain(
+      pAdapter, DriverType, Software, Flags,
+      pFeatureLevels, FeatureLevels, SDKVersion,
+      pSwapChainDesc, ppSwapChain,
+      ppDevice, pFeatureLevel, ppImmediateContext);
+    d3d11CrashLog("[D3D11CreateDeviceAndSwapChain] returned");
+    return hr;
   }
   
 
@@ -516,12 +453,46 @@ extern "C" {
           ID3D11Device**        ppDevice,
           ID3D11DeviceContext** ppImmediateContext,
           D3D_FEATURE_LEVEL*    pChosenFeatureLevel) {
+    if (env::shouldBypassRemixForCurrentProcess()) {
+      Logger::info(str::format("D3D11On12 bypass for helper process: ", env::getExeName()));
+      return forwardToSystemD3D11On12CreateDevice(pDevice, Flags, pFeatureLevels, FeatureLevels,
+        ppCommandQueues, NumQueues, NodeMask, ppDevice, ppImmediateContext, pChosenFeatureLevel);
+    }
+
     static bool s_errorShown = false;
 
     if (!std::exchange(s_errorShown, true))
       Logger::err("D3D11On12CreateDevice: Not implemented");
 
     return E_NOTIMPL;
+  }
+
+
+  DLLEXPORT HRESULT __stdcall CreateDirect3D11DeviceFromDXGIDevice(
+          void*   dxgiDevice,
+          void**  graphicsDevice) {
+    HMODULE hSys = loadSystemD3D11();
+    if (!hSys) return E_FAIL;
+
+    using PFN = HRESULT(WINAPI*)(void*, void**);
+    auto fn = reinterpret_cast<PFN>(GetProcAddress(hSys, "CreateDirect3D11DeviceFromDXGIDevice"));
+    if (!fn) return E_FAIL;
+
+    return fn(dxgiDevice, graphicsDevice);
+  }
+
+
+  DLLEXPORT HRESULT __stdcall CreateDirect3D11SurfaceFromDXGISurface(
+          void*   dxgiSurface,
+          void**  graphicsSurface) {
+    HMODULE hSys = loadSystemD3D11();
+    if (!hSys) return E_FAIL;
+
+    using PFN = HRESULT(WINAPI*)(void*, void**);
+    auto fn = reinterpret_cast<PFN>(GetProcAddress(hSys, "CreateDirect3D11SurfaceFromDXGISurface"));
+    if (!fn) return E_FAIL;
+
+    return fn(dxgiSurface, graphicsSurface);
   }
 
 }
