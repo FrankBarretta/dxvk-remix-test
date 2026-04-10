@@ -654,17 +654,26 @@ namespace dxvk {
             g_d3d11WndProcMap[m_window] = this;
           }
 
-          // Render Remix ImGui into the Remix backbuffer so the presented image
-          // remains a single Remix-owned composition instead of a DXVK-side overlay.
-          RtxOptionManager::applyPendingValues(m_device.ptr());
-          auto& gui = m_device->getCommon()->getImgui();
-          gui.render(m_window, m_context, info.format, info.imageExtent, m_vsync);
         }
       }
-      
+
       m_blitter->presentImage(m_context.ptr(),
         m_imageViews.at(imageIndex), VkRect2D(),
         m_swapImageView, VkRect2D());
+
+      // Render Remix ImGui AFTER the blit so the overlay is not overwritten.
+      if (isPrimary && m_swapImageRtView != nullptr) {
+        RtxOptionManager::applyPendingValues(m_device.ptr());
+        auto& gui = m_device->getCommon()->getImgui();
+
+        // Bind the swap chain image as RT for the ImGui overlay pass.
+        DxvkRenderTargets imguiTargets;
+        imguiTargets.color[0].view = m_imageViews.at(imageIndex);
+        imguiTargets.color[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        m_context->bindRenderTargets(imguiTargets);
+
+        gui.render(m_window, m_context, info.format, info.imageExtent, m_vsync);
+      }
 
       if (i + 1 >= SyncInterval)
         m_context->signal(m_frameLatencySignal, m_frameId);
