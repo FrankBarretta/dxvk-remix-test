@@ -234,6 +234,8 @@ namespace dxvk {
 
     for (UINT i = 0; i < maxInstances; ++i) {
       UINT instIdx = startInstance + i;
+      if (instStride > 0 && static_cast<size_t>(instIdx) > SIZE_MAX / instStride)
+        break; // overflow guard
       size_t instOffset = static_cast<size_t>(instIdx) * instStride;
 
       // Read 3 or 4 float4 rows to build a world matrix.
@@ -789,13 +791,21 @@ namespace dxvk {
         // Cached location is stale (different pass). Re-scan all stages.
         projSlot = UINT32_MAX;
         float bestScore = 0.0f;
+        bool bestCol = m_columnMajor;
         for (int si = 0; si < kNumStages; ++si) {
           uint32_t ts = UINT32_MAX; size_t to = SIZE_MAX;
           float tsc = bestScore; Matrix4 tm; bool tc = false;
           if (scanStageForProj(si, ts, to, tsc, tm, tc)) {
             projSlot = ts; projOffset = to; projStage = si;
-            proj = tm; bestScore = tsc;
+            proj = tm; bestScore = tsc; bestCol = tc;
           }
+        }
+        // Update the member cache so subsequent draws hit the fast path.
+        if (projSlot != UINT32_MAX) {
+          m_projSlot    = projSlot;
+          m_projOffset  = projOffset;
+          m_projStage   = projStage;
+          m_columnMajor = bestCol;
         }
       }
 
@@ -1879,12 +1889,12 @@ namespace dxvk {
     const D3D11RtxSemantic* bwSem  = nullptr;
     const D3D11RtxSemantic* biSem  = nullptr;
 
+    // Only accept texcoord formats the RTX interleaver can actually convert.
+    // R16G16_SFLOAT, R16G16_UNORM, R16G16_SNORM, R8G8_UNORM are NOT supported
+    // by the interleaver — submitting them produces garbage UVs (all 1.0).
+    // Remix handles missing UVs gracefully via the material system.
     static auto isTexcoordFmt = [](VkFormat f) {
-      return f == VK_FORMAT_R32G32_SFLOAT        // 103 — standard 2-float UVs
-          || f == VK_FORMAT_R16G16_SFLOAT         // 83  — half-float UVs
-          || f == VK_FORMAT_R16G16_UNORM          // 77  — normalized 16-bit UVs (UE4, Unity HDRP)
-          || f == VK_FORMAT_R16G16_SNORM          // 79  — signed normalized (some console ports)
-          || f == VK_FORMAT_R8G8_UNORM;           // 16  — 8-bit packed UVs (mobile ports)
+      return f == VK_FORMAT_R32G32_SFLOAT;        // 103 — standard 2-float UVs
     };
 
     for (const auto& s : semantics) {
@@ -1993,6 +2003,8 @@ namespace dxvk {
     // R32G32B32A32_SFLOAT(109), R8G8B8A8_UNORM(37), A2B10G10R10_SNORM(65).
     // D3D11 normals are often R16G16B16A16_SFLOAT(97) or R16G16B16A16_SNORM(98)
     // which the interleaver rejects.  Remix regenerates normals when absent.
+    // Only accept normal formats the RTX interleaver can actually convert.
+    // R16G16_SFLOAT is NOT supported — Remix regenerates normals when absent.
     RasterBuffer nrmBuffer;
     if (nrmSem && RtxOptions::useInputAssemblerNormals()) {
       VkFormat nf = nrmSem->format;
@@ -2000,7 +2012,6 @@ namespace dxvk {
        || nf == VK_FORMAT_R32G32B32_SFLOAT
        || nf == VK_FORMAT_R32G32B32A32_SFLOAT
        || nf == VK_FORMAT_R32G32_SFLOAT
-       || nf == VK_FORMAT_R16G16_SFLOAT
        || nf == static_cast<VkFormat>(65)) {  // A2B10G10R10_SNORM_PACK32
         nrmBuffer = makeVertexBuffer(nrmSem);
       }

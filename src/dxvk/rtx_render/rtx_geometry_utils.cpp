@@ -839,6 +839,7 @@ namespace dxvk {
       args.normalFormat = input.normalBuffer.vertexFormat();
       if (!interleaver::formatConversionFloatSupported(args.normalFormat)) {
         ONCE(Logger::warn(str::format("[rtx-interleaver] Unsupported normal buffer format (", args.normalFormat, "), skipping normals")));
+        args.hasNormals = false;
       }
     }
     args.hasTexcoord = input.texcoordBuffer.defined();
@@ -850,6 +851,7 @@ namespace dxvk {
       args.texcoordFormat = input.texcoordBuffer.vertexFormat();
       if (!interleaver::formatConversionFloatSupported(args.texcoordFormat)) {
         ONCE(Logger::warn(str::format("[rtx-interleaver] Unsupported texcoord buffer format (", args.texcoordFormat, "), skipping texcoord")));
+        args.hasTexcoord = false;
       }
     }
     args.hasColor0 = input.color0Buffer.defined();
