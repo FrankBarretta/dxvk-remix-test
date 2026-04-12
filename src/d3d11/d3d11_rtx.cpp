@@ -21,6 +21,7 @@
 #include "../dxvk/rtx_render/rtx_scene_manager.h"
 #include "../dxvk/rtx_render/rtx_light_manager.h"
 #include "../dxvk/rtx_render/rtx_matrix_helpers.h"
+#include "../dxvk/imgui/dxvk_imgui.h"
 
 #include <cstring>
 #include <cmath>
@@ -1754,6 +1755,48 @@ namespace dxvk {
       textureID = 1;
     }
 
+    // Ensure every picked texture has a stable hash on its DxvkImage.
+    // D3D11 textures are GPU-managed — we can't hash pixel data like D3D9.
+    // Instead, derive a hash from the Vulkan image handle (unique per alloc)
+    // combined with image properties.  This is stable for the texture's
+    // lifetime and deterministic within a session.
+    for (uint32_t i = 0; i < textureID; ++i) {
+      DxvkImageView* view = mat.colorTextures[i].getImageView();
+      if (view == nullptr)
+        continue;
+
+      DxvkImage* img = view->image().ptr();
+      if (img == nullptr || img->getHash() != 0)
+        continue;
+
+      // Build a hash from properties that uniquely identify this texture.
+      // The VkImage handle is unique per allocation and stable until the
+      // image is destroyed, making it a reliable per-session identifier.
+      const auto& info = img->info();
+      struct {
+        VkImage     vkHandle;
+        uint32_t    width;
+        uint32_t    height;
+        uint32_t    mipLevels;
+        VkFormat    format;
+      } hashInput = {
+        img->handle(),
+        info.extent.width,
+        info.extent.height,
+        info.mipLevels,
+        info.format,
+      };
+
+      XXH64_hash_t imageHash = XXH3_64bits(&hashInput, sizeof(hashInput));
+      if (imageHash == 0)
+        imageHash = 1;  // 0 is sentinel for "no hash"
+
+      img->setHash(imageHash);
+      // Wrap the raw pointer — Rc ctor increments the refcount safely.
+      Rc<DxvkImageView> viewRc(view);
+      ImGUI::AddTexture(imageHash, viewRc, ImGUI::kTextureFlagsDefault);
+    }
+
     if (doLog && pickCount > 0) {
       Logger::info(str::format("[D3D11Rtx] FillMaterialData draw #", s_logCount,
         " picked ", textureID, " of ", pickCount, " candidate(s)"));
@@ -2471,6 +2514,12 @@ namespace dxvk {
     // swap chain routes EndFrame/OnPresent through us, not a video-playback
     // device that happened to present first.
     FillMaterialData(dcs.materialData);
+
+    // Set up texture-based categories (Sky, Terrain, Ignore, WorldUI, etc.)
+    // so that the Remix UI can display and categorize textures by their hash.
+    // This must run after FillMaterialData populates colorTextures[] and before
+    // commitGeometryToRT, mirroring the D3D9 path.
+    dcs.setupCategoriesForTexture();
 
     if (!geo.texcoordBuffer.defined() && dcs.materialData.usesTexture()) {
       static uint32_t sMissingUvTextureLogCount = 0;
